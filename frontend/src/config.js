@@ -7,4 +7,4 @@
 //   be on the same Wi-Fi network.
 //
 // Edit this one line to match your setup.
-export const BACKEND_URL = "http://localhost:4000";
+export const BACKEND_URL = "http://192.168.1.181:4000";
