@@ -4,7 +4,10 @@
 const path = require("path");
 const Database = require("better-sqlite3");
 
-const db = new Database(path.join(__dirname, "colorsv3.db"));
+// Real data lives in colorsv3.db. Tests override COLORSV3_DB to a throwaway file so
+// they can never touch your real users/teams/characters.
+const DB_FILE = process.env.COLORSV3_DB || path.join(__dirname, "colorsv3.db");
+const db = new Database(DB_FILE);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 

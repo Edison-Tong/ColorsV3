@@ -233,7 +233,7 @@ function publicState(room) {
     winnerId: b.winnerId,
     units: b.units,
     positions: b.positions,
-    moved: b.moved,
+    moveRemaining: b.moveRemaining,
     acted: b.acted,
     rows: BOARD_ROWS,
     cols: BOARD_COLS,
@@ -269,7 +269,7 @@ function startBattle(room) {
   const b = room.battle;
   const first = Math.random() < 0.5 ? room.hostId : room.joinerId;
   b.turnUserId = first;
-  b.moved = {};
+  b.moveRemaining = {}; // per-unit movement budget for the turn; defaults to full move when absent
   b.acted = {};
   b.over = false;
   b.winnerId = null;
@@ -355,17 +355,20 @@ io.on("connection", (socket) => {
 
     const unit = b.units[charId];
     if (!unit || unit.ownerId !== me || !unit.alive) return cb && cb({ error: "Invalid unit" });
-    if (b.acted[charId]) return cb && cb({ error: "Unit already acted" });
-    if (b.moved[charId]) return cb && cb({ error: "Unit already moved" });
+
+    // Movement is a per-turn budget: a unit may move multiple times (and move before
+    // or after attacking) as long as it has movement points left. Attacking does not
+    // consume movement.
+    const remaining = b.moveRemaining[charId] != null ? b.moveRemaining[charId] : combat.getMoveValue(unit);
 
     const from = b.positions[charId];
     if (!to || to.r < 0 || to.r >= BOARD_ROWS || to.c < 0 || to.c >= BOARD_COLS) return cb && cb({ error: "Off board" });
     const dist = combat.manhattan(from, to);
-    if (dist === 0 || dist > combat.getMoveValue(unit)) return cb && cb({ error: "Out of move range" });
+    if (dist === 0 || dist > remaining) return cb && cb({ error: "Out of move range" });
     if (occupant(room, to.r, to.c)) return cb && cb({ error: "Cell occupied" });
 
     b.positions[charId] = { r: to.r, c: to.c };
-    b.moved[charId] = true;
+    b.moveRemaining[charId] = remaining - dist;
     cb && cb({ ok: true });
     broadcast(room);
   });
@@ -404,8 +407,7 @@ io.on("connection", (socket) => {
     defender.health = result.defenderHp;
     if (attacker.health <= 0) { attacker.alive = false; delete b.positions[attackerId]; }
     if (defender.health <= 0) { defender.alive = false; delete b.positions[defenderId]; }
-    b.acted[attackerId] = true;
-    b.moved[attackerId] = true; // can't move after attacking
+    b.acted[attackerId] = true; // one attack per unit per turn; movement budget is unaffected
 
     checkWin(room);
 
@@ -418,13 +420,49 @@ io.on("connection", (socket) => {
     broadcast(room);
   });
 
+  // Cast a mage special ability. Targets an ally, enemy, or self within the special's
+  // range. For now this only consumes the caster's action and notifies both players —
+  // the status effects themselves are deferred to a later pass.
+  on("cast", ({ code, casterId, targetId, specialName }, cb) => {
+    const room = rooms[code];
+    if (!room || !room.battle) return cb && cb({ error: "No battle" });
+    const b = room.battle;
+    const me = socket.data.userId;
+    if (b.over) return cb && cb({ error: "Battle over" });
+    if (b.turnUserId !== me) return cb && cb({ error: "Not your turn" });
+
+    const caster = b.units[casterId];
+    if (!caster || caster.ownerId !== me || !caster.alive) return cb && cb({ error: "Invalid caster" });
+    if (b.acted[casterId]) return cb && cb({ error: "Unit already acted" });
+    if (!(caster.specials || []).includes(specialName)) return cb && cb({ error: "Unknown special" });
+
+    const special = combat.findAbility(caster, specialName);
+    if (!special) return cb && cb({ error: "Unknown special" });
+
+    const target = b.units[targetId];
+    if (!target || !target.alive) return cb && cb({ error: "Invalid target" });
+
+    const range = Math.max(1, Number(special.range) || 1);
+    const dist = combat.manhattan(b.positions[casterId], b.positions[targetId]);
+    if (Number(targetId) !== Number(casterId) && dist > range) return cb && cb({ error: "Target out of range" });
+
+    b.acted[casterId] = true; // casting is the unit's action for the turn
+
+    io.to(room.code).emit("specialResult", {
+      casterId, targetId, specialName,
+      effect: special.effect, description: special.description,
+    });
+    cb && cb({ ok: true });
+    broadcast(room);
+  });
+
   on("endTurn", ({ code }, cb) => {
     const room = rooms[code];
     if (!room || !room.battle) return cb && cb({ error: "No battle" });
     const b = room.battle;
     if (b.turnUserId !== socket.data.userId) return cb && cb({ error: "Not your turn" });
     b.turnUserId = b.turnUserId === room.hostId ? room.joinerId : room.hostId;
-    b.moved = {};
+    b.moveRemaining = {};
     b.acted = {};
     cb && cb({ ok: true });
     broadcast(room);

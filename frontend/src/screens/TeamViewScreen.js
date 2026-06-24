@@ -2,7 +2,8 @@ import { useState, useCallback } from "react";
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Alert, ActivityIndicator } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { api } from "../api";
-import { theme, WEAPON_GLYPH, STAT_LABELS } from "../theme";
+import { theme, FONTS, WEAPON_GLYPH, STAT_LABELS } from "../theme";
+import { Torn, TornButton } from "../components/Torn";
 import { computeAllStats, getMoveValue } from "../logic/combat";
 
 const SIZE_REQ = { 4: 1, 3: 2, 2: 2, 1: 1 };
@@ -43,7 +44,7 @@ export default function TeamViewScreen({ route, navigation }) {
     <ScrollView style={styles.wrap} contentContainerStyle={{ padding: 16 }}>
       <Text style={styles.title}>{teamName}</Text>
 
-      <View style={styles.reqCard}>
+      <Torn style={styles.reqCard}>
         <Text style={styles.reqHeader}>Roster {chars.length}/6</Text>
         <View style={styles.reqRow}>
           {[4, 3, 2, 1].map((s) => (
@@ -57,12 +58,12 @@ export default function TeamViewScreen({ route, navigation }) {
             <Text style={[styles.reqText, { color: mageCount > 2 ? theme.danger : theme.textDim }]}>Mages: {mageCount}/2</Text>
           </View>
         </View>
-      </View>
+      </Torn>
 
       {chars.map((c) => {
         const stats = computeAllStats(c, null);
         return (
-          <TouchableOpacity key={c.id} style={styles.charCard} activeOpacity={0.85}
+          <TornButton key={c.id} style={styles.charCard}
             onPress={() => setExpanded(expanded === c.id ? null : c.id)} onLongPress={() => removeChar(c)}>
             <View style={styles.charHead}>
               <Text style={styles.glyph}>{WEAPON_GLYPH[c.base_weapon] || "⚔️"}</Text>
@@ -87,16 +88,16 @@ export default function TeamViewScreen({ route, navigation }) {
                 <Text style={styles.hint}>Long-press card to remove</Text>
               </View>
             )}
-          </TouchableOpacity>
+          </TornButton>
         );
       })}
 
       {!complete && (
-        <TouchableOpacity style={styles.addBtn} onPress={() => navigation.navigate("CharCreation", { teamId, existing: chars })}>
-          <Text style={styles.addText}>+ Add Character ({chars.length}/6)</Text>
-        </TouchableOpacity>
+        <TornButton style={styles.addBtn} onPress={() => navigation.navigate("CharCreation", { teamId, existing: chars })}>
+          <Text style={styles.addText}>✛ Muster a Champion ({chars.length}/6)</Text>
+        </TornButton>
       )}
-      {complete && <Text style={styles.ready}>✅ Team complete — ready to battle!</Text>}
+      {complete && <Text style={styles.ready}>⚜️ Warband complete — ready for war!</Text>}
     </ScrollView>
   );
 }
@@ -106,16 +107,16 @@ const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: theme.bg },
   center: { flex: 1, backgroundColor: theme.bg, justifyContent: "center" },
-  title: { color: theme.text, fontSize: 26, fontWeight: "800", marginBottom: 12 },
-  reqCard: { backgroundColor: theme.card, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: theme.border, marginBottom: 16 },
-  reqHeader: { color: theme.text, fontWeight: "700", marginBottom: 8 },
+  title: { fontFamily: FONTS.display, color: theme.text, fontSize: 30, marginBottom: 12 },
+  reqCard: { backgroundColor: theme.card, borderRadius: 8, padding: 14, borderWidth: 2, borderColor: theme.border, marginBottom: 16 },
+  reqHeader: { fontFamily: FONTS.heading, color: theme.text, marginBottom: 8, letterSpacing: 1 },
   reqRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  reqPill: { backgroundColor: theme.cardAlt, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  reqPill: { backgroundColor: theme.cardAlt, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, borderWidth: 1, borderColor: theme.border },
   reqText: { color: theme.textDim, fontSize: 12, fontWeight: "600" },
-  charCard: { backgroundColor: theme.card, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: theme.border, marginBottom: 12 },
+  charCard: { backgroundColor: theme.card, borderRadius: 8, padding: 14, borderWidth: 2, borderColor: theme.border, marginBottom: 12 },
   charHead: { flexDirection: "row", alignItems: "center", gap: 12 },
   glyph: { fontSize: 28 },
-  charName: { color: theme.text, fontSize: 18, fontWeight: "700" },
+  charName: { fontFamily: FONTS.heading, color: theme.text, fontSize: 18, letterSpacing: 0.5 },
   charSub: { color: theme.textDim, marginTop: 2, fontSize: 13 },
   hp: { color: theme.danger, fontWeight: "700" },
   detail: { marginTop: 12, borderTopWidth: 1, borderTopColor: theme.border, paddingTop: 12 },
@@ -126,7 +127,7 @@ const styles = StyleSheet.create({
   derived: { color: theme.warn, fontSize: 12, marginTop: 4, marginBottom: 8 },
   abilityLine: { color: theme.textDim, fontSize: 13, marginTop: 2 },
   hint: { color: theme.textDim, fontSize: 11, marginTop: 8, fontStyle: "italic" },
-  addBtn: { backgroundColor: theme.primary, borderRadius: 12, padding: 16, alignItems: "center", marginTop: 6, marginBottom: 30 },
-  addText: { color: "#fff", fontWeight: "700", fontSize: 16 },
-  ready: { color: theme.good, textAlign: "center", marginTop: 10, marginBottom: 30, fontWeight: "700" },
+  addBtn: { backgroundColor: theme.primary, borderRadius: 8, padding: 16, alignItems: "center", marginTop: 6, marginBottom: 30, borderWidth: 1, borderColor: theme.gold },
+  addText: { fontFamily: FONTS.heading, color: "#23170a", fontSize: 16, letterSpacing: 1 },
+  ready: { fontFamily: FONTS.heading, color: theme.good, textAlign: "center", marginTop: 10, marginBottom: 30, fontSize: 15, letterSpacing: 1 },
 });

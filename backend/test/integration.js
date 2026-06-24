@@ -1,8 +1,37 @@
 // End-to-end battle test: two socket clients play a full exchange against a live server.
-// Run: node test/integration.js  (expects the server running on PORT 4099)
+// Self-contained — it spawns its OWN server on a throwaway DB so it can never touch
+// your real colorsv3.db. Run: npm run test:e2e
 const { io } = require("socket.io-client");
+const { spawn } = require("child_process");
+const path = require("path");
+const fs = require("fs");
 
-const B = "http://localhost:4099";
+const PORT = 4099;
+const B = `http://localhost:${PORT}`;
+const TEST_DB = path.join(require("os").tmpdir(), `colorsv3-test-${process.pid}.db`);
+
+let server;
+function startServer() {
+  return new Promise((resolve, reject) => {
+    server = spawn("node", [path.join(__dirname, "..", "server.js")], {
+      env: { ...process.env, PORT: String(PORT), COLORSV3_DB: TEST_DB },
+      stdio: "ignore",
+    });
+    server.on("error", reject);
+    // poll /ping until the server answers
+    const t0 = Date.now();
+    (function wait() {
+      fetch(`${B}/ping`).then(() => resolve()).catch(() => {
+        if (Date.now() - t0 > 8000) return reject(new Error("server did not start"));
+        setTimeout(wait, 200);
+      });
+    })();
+  });
+}
+function stopServer() {
+  if (server) server.kill();
+  for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) { try { fs.unlinkSync(f); } catch {} }
+}
 
 async function rest(path, method = "GET", body) {
   const res = await fetch(B + path, { method, headers: { "Content-Type": "application/json" }, body: body && JSON.stringify(body) });
@@ -47,6 +76,8 @@ const emit = (sock, ev, payload, ms = 8000) =>
   });
 
 (async () => {
+  await startServer();
+  console.log(`✓ test server up on :${PORT} (throwaway DB)`);
   const A = await buildTeam("p1_" + Date.now());
   const C = await buildTeam("p2_" + Date.now());
   console.log("✓ two 6-char teams built");
@@ -83,7 +114,30 @@ const emit = (sock, ev, payload, ms = 8000) =>
   const to = { r: pos.r + dir, c: pos.c };
   const moveRes = await emit(mover, "move", { code, charId: Number(unitId), to });
   if (moveRes.error) throw new Error("move failed: " + moveRes.error);
-  console.log(`✓ moved unit ${unitId} from ${pos.r},${pos.c} to ${to.r},${to.c}`);
+  console.log(`✓ moved unit ${unitId} from ${pos.r},${pos.c} to ${to.r},${to.c} (dist 1)`);
+
+  // Cumulative movement: the unit kept (move_value - 1) points, so it can keep moving this turn.
+  const mv = s1.units[unitId].move_value;
+  const to2 = { r: to.r, c: to.c + (mv - 1) };
+  const m2 = await emit(mover, "move", { code, charId: Number(unitId), to: to2 });
+  if (m2.error) throw new Error("cumulative move failed: " + m2.error);
+  console.log(`✓ same unit moved ${mv - 1} more spaces later in the turn (budget now spent)`);
+
+  // One more step should now be rejected — the budget is exhausted.
+  const m3 = await emit(mover, "move", { code, charId: Number(unitId), to: { r: to2.r, c: to2.c + 1 } });
+  if (!m3.error) throw new Error("expected out-of-budget rejection");
+  console.log("✓ over-budget move correctly rejected:", m3.error);
+
+  // Mage specials: the mover's mage can cast one of its 3 specials (here, on itself).
+  const mageEntry = Object.entries(s1.units).find(([id, u]) => u.ownerId === moverId && u.type === "mage");
+  if (!mageEntry) throw new Error("no mage found for mover");
+  const [mageId, mageUnit] = mageEntry;
+  const castRes = await emit(mover, "cast", { code, casterId: Number(mageId), targetId: Number(mageId), specialName: mageUnit.specials[0] });
+  if (castRes.error) throw new Error("cast failed: " + castRes.error);
+  console.log(`✓ mage cast special "${mageUnit.specials[0]}" (1 of ${mageUnit.specials.length} available)`);
+  const castRes2 = await emit(mover, "cast", { code, casterId: Number(mageId), targetId: Number(mageId), specialName: mageUnit.specials[1] });
+  if (!castRes2.error) throw new Error("expected already-acted rejection on second cast");
+  console.log("✓ casting twice correctly rejected:", castRes2.error);
 
   // Wrong-turn guard: the other player must not be able to move.
   const other = firstIsHost ? join : host;
@@ -107,5 +161,6 @@ const emit = (sock, ev, payload, ms = 8000) =>
 
   host.close(); join.close();
   console.log("\nAll integration checks passed ✓");
+  stopServer();
   process.exit(0);
-})().catch((e) => { console.error("INTEGRATION FAIL:", e.message); process.exit(1); });
+})().catch((e) => { console.error("INTEGRATION FAIL:", e.message); stopServer(); process.exit(1); });

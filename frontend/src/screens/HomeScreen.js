@@ -1,31 +1,32 @@
 import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { useAuth } from "../AuthContext";
-import { theme } from "../theme";
+import { theme, FONTS } from "../theme";
+import { TornButton } from "../components/Torn";
 
 export default function HomeScreen({ navigation }) {
   const { user, signOut } = useAuth();
   return (
     <View style={styles.wrap}>
-      <Text style={styles.hi}>Welcome, <Text style={{ color: theme.primary }}>{user?.username}</Text></Text>
+      <Text style={styles.hi}>Hail, <Text style={{ color: theme.gold }}>{user?.username}</Text></Text>
 
-      <TouchableOpacity style={styles.tile} onPress={() => navigation.navigate("TeamList")}>
+      <TornButton style={styles.tile} onPress={() => navigation.navigate("TeamList")}>
         <Text style={styles.tileIcon}>🛡️</Text>
         <View style={{ flex: 1 }}>
-          <Text style={styles.tileTitle}>Teams</Text>
-          <Text style={styles.tileSub}>Build and manage your teams of 6</Text>
+          <Text style={styles.tileTitle}>Warbands</Text>
+          <Text style={styles.tileSub}>Muster and arm your company of six</Text>
         </View>
-      </TouchableOpacity>
+      </TornButton>
 
-      <TouchableOpacity style={styles.tile} onPress={() => navigation.navigate("BattleLobby")}>
+      <TornButton style={styles.tile} onPress={() => navigation.navigate("BattleLobby")}>
         <Text style={styles.tileIcon}>⚔️</Text>
         <View style={{ flex: 1 }}>
           <Text style={styles.tileTitle}>Battle</Text>
-          <Text style={styles.tileSub}>Host or join a match with a code</Text>
+          <Text style={styles.tileSub}>Host or answer a summons by token</Text>
         </View>
-      </TouchableOpacity>
+      </TornButton>
 
       <TouchableOpacity style={styles.signout} onPress={signOut}>
-        <Text style={styles.signoutText}>Sign out</Text>
+        <Text style={styles.signoutText}>Abandon post</Text>
       </TouchableOpacity>
     </View>
   );
@@ -33,11 +34,11 @@ export default function HomeScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: theme.bg, padding: 20 },
-  hi: { color: theme.text, fontSize: 24, fontWeight: "700", marginVertical: 16 },
-  tile: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: theme.card, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: theme.border, marginBottom: 14 },
-  tileIcon: { fontSize: 34 },
-  tileTitle: { color: theme.text, fontSize: 20, fontWeight: "700" },
-  tileSub: { color: theme.textDim, marginTop: 2 },
+  hi: { fontFamily: FONTS.display, color: theme.text, fontSize: 30, marginVertical: 16 },
+  tile: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: theme.card, borderRadius: 8, padding: 20, borderWidth: 2, borderColor: theme.border, marginBottom: 14 },
+  tileIcon: { fontSize: 36 },
+  tileTitle: { fontFamily: FONTS.heading, color: theme.text, fontSize: 20, letterSpacing: 1 },
+  tileSub: { color: theme.textDim, marginTop: 2, fontSize: 15 },
   signout: { marginTop: "auto", padding: 16, alignItems: "center" },
-  signoutText: { color: theme.danger, fontWeight: "600" },
+  signoutText: { fontFamily: FONTS.headingReg, color: theme.danger, letterSpacing: 1 },
 });

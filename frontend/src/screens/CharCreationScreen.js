@@ -2,8 +2,9 @@ import { useState, useMemo } from "react";
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert } from "react-native";
 import { api } from "../api";
 import { weaponsData } from "../data/weaponsData";
-import { theme, STAT_LABELS, WEAPON_GLYPH } from "../theme";
+import { theme, FONTS, STAT_LABELS, WEAPON_GLYPH } from "../theme";
 import { computeAllStats } from "../logic/combat";
+import { Torn, TornButton } from "../components/Torn";
 
 const STAT_KEYS = ["health", "strength", "defense", "magick", "resistance", "speed", "skill", "knowledge", "luck"];
 const STAT_CAP = 70;
@@ -162,17 +163,17 @@ export default function CharCreationScreen({ route, navigation }) {
       </Field>
 
       {preview && (
-        <View style={styles.previewCard}>
+        <Torn style={styles.previewCard}>
           <Text style={styles.previewTitle}>Computed (with weapon{size ? " + size" : ""})</Text>
           <Text style={styles.previewText}>
             Power {preview.power} · Prot {type === "mage" ? preview.protection.magic : preview.protection.melee} · Acc {preview.accuracy} · Eva {preview.evasion} · Crit {preview.critical} · Block {preview.block}
           </Text>
-        </View>
+        </Torn>
       )}
 
-      <TouchableOpacity style={[styles.submit, busy && { opacity: 0.6 }]} onPress={submit} disabled={busy}>
-        <Text style={styles.submitText}>{busy ? "Saving…" : "Create Character"}</Text>
-      </TouchableOpacity>
+      <TornButton style={styles.submit} wrapStyle={busy && { opacity: 0.6 }} onPress={submit} disabled={busy}>
+        <Text style={styles.submitText}>{busy ? "Mustering…" : "⚜️ Muster Champion"}</Text>
+      </TornButton>
     </ScrollView>
   );
 }
@@ -206,11 +207,11 @@ const AbilityRow = ({ a, active, special, onPress }) => (
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: theme.bg },
-  input: { backgroundColor: theme.cardAlt, color: theme.text, borderRadius: 10, padding: 14, fontSize: 16 },
-  fieldLabel: { color: theme.text, fontWeight: "700", fontSize: 16, marginBottom: 8 },
+  input: { backgroundColor: theme.cardAlt, color: theme.text, borderRadius: 6, padding: 14, fontSize: 17, borderWidth: 1, borderColor: theme.border },
+  fieldLabel: { fontFamily: FONTS.heading, color: theme.gold, fontSize: 16, marginBottom: 8, letterSpacing: 1 },
   note: { color: theme.textDim, fontSize: 12, marginTop: 6 },
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  chip: { backgroundColor: theme.cardAlt, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: theme.border },
+  chip: { backgroundColor: theme.cardAlt, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 6, borderWidth: 1, borderColor: theme.border },
   chipActive: { backgroundColor: theme.primary, borderColor: theme.primary },
   chipDisabled: { opacity: 0.45 },
   chipText: { color: theme.text, fontWeight: "600" },
@@ -230,6 +231,6 @@ const styles = StyleSheet.create({
   previewCard: { backgroundColor: theme.card, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: theme.border, marginBottom: 18 },
   previewTitle: { color: theme.text, fontWeight: "700", marginBottom: 4 },
   previewText: { color: theme.warn, fontSize: 13 },
-  submit: { backgroundColor: theme.good, borderRadius: 12, padding: 16, alignItems: "center" },
-  submitText: { color: "#06281c", fontWeight: "800", fontSize: 16 },
+  submit: { backgroundColor: theme.good, borderRadius: 8, padding: 16, alignItems: "center", borderWidth: 1, borderColor: theme.gold },
+  submitText: { fontFamily: FONTS.heading, color: "#0e1505", fontSize: 16, letterSpacing: 1 },
 });
