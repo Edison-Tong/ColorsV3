@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "ColorsV3",
+    "slug": "colorsv3",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#0e1018"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": { "supportsTablet": true },
+    "android": {},
+    "web": {}
+  }
+}
