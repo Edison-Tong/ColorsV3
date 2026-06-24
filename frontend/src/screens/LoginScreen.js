@@ -30,7 +30,7 @@ export default function LoginScreen({ navigation }) {
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.wrap}>
       <Text style={styles.crest}>⚔️</Text>
-      <Text style={styles.logo}>Colors<Text style={{ color: theme.gold }}>V3</Text></Text>
+      <Text style={styles.logo}>The <Text style={{ color: theme.gold }}>Keep</Text></Text>
       <Text style={styles.sub}>— a contest of warbands —</Text>
 
       <Torn style={styles.card}>

@@ -82,6 +82,20 @@ const emit = (sock, ev, payload, ms = 8000) =>
   const C = await buildTeam("p2_" + Date.now());
   console.log("✓ two 6-char teams built");
 
+  // Edit a character: rename + change a stat, and verify it persists.
+  const aTeams = await rest(`/teams?userId=${A.user.id}`);
+  const aChars = aTeams.teams[0].characters;
+  const target = aChars[0];
+  const edited = await rest(`/characters/${target.id}`, "PUT", {
+    name: "Renamed", type: target.type, size: target.size, base_weapon: target.base_weapon,
+    abilities: target.abilities, specials: target.specials,
+    stats: { health: 11, strength: target.strength, defense: target.defense, magick: target.magick, resistance: target.resistance, speed: target.speed, skill: target.skill, knowledge: target.knowledge, luck: target.luck },
+  });
+  if (edited.character.name !== "Renamed" || edited.character.health !== 11) throw new Error("edit did not persist");
+  const reread = (await rest(`/teams/${aTeams.teams[0].id}/characters`)).characters.find((c) => c.id === target.id);
+  if (reread.name !== "Renamed") throw new Error("edit not reflected on reread");
+  console.log("✓ character edited (rename + stat) and persisted");
+
   const host = connect();
   const join = connect();
   await once(host, "connect");

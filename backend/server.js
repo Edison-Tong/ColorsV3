@@ -135,46 +135,61 @@ app.get("/teams/:id/characters", route(async (req, res) => {
 
 // ───────────────────────────── Characters ─────────────────────────────
 
+// Validate a character payload against the rest of the team and build the DB row.
+// `existing` is the OTHER characters to validate composition against (excludes self on edit).
+// Returns { error } or { row } (row has no team_id).
+function validateAndBuildCharacter(body, existing) {
+  const { name, type, size, base_weapon, abilities, specials, stats } = body || {};
+  if (!name || !type || !size || !base_weapon || !stats) return { error: "Missing fields" };
+
+  const compErr = validateComposition(existing, { type, size });
+  if (compErr) return { error: compErr };
+  const statErr = validateCharacterStats(stats);
+  if (statErr) return { error: statErr };
+  const abErr = abilitiesValid({ type, base_weapon, abilities: abilities || [], specials: specials || [] });
+  if (abErr) return { error: abErr };
+
+  return {
+    row: {
+      name: name.trim(),
+      type: String(type).toLowerCase(),
+      size: Number(size),
+      base_weapon: String(base_weapon).toLowerCase(),
+      move_value: combat.getMoveValue({ type, base_weapon }),
+      abilities: JSON.stringify(abilities || []),
+      specials: JSON.stringify(type === "mage" ? specials || [] : []),
+      health: Number(stats.health), strength: Number(stats.strength), defense: Number(stats.defense),
+      magick: Number(stats.magick), resistance: Number(stats.resistance), speed: Number(stats.speed),
+      skill: Number(stats.skill), knowledge: Number(stats.knowledge), luck: Number(stats.luck),
+    },
+  };
+}
+
 app.post("/teams/:id/characters", route(async (req, res) => {
   const teamId = Number(req.params.id);
   const team = await store.getTeam(teamId);
   if (!team) return res.status(404).json({ message: "Team not found" });
 
-  const { name, type, size, base_weapon, abilities, specials, stats } = req.body || {};
-  if (!name || !type || !size || !base_weapon || !stats) return res.status(400).json({ message: "Missing fields" });
-
   const existing = await store.getCharacters(teamId);
-  const compErr = validateComposition(existing, { type, size });
-  if (compErr) return res.status(400).json({ message: compErr });
+  const { error, row } = validateAndBuildCharacter(req.body, existing);
+  if (error) return res.status(400).json({ message: error });
 
-  const statErr = validateCharacterStats(stats);
-  if (statErr) return res.status(400).json({ message: statErr });
-
-  const draft = { type, base_weapon, abilities: abilities || [], specials: specials || [] };
-  const abErr = abilitiesValid(draft);
-  if (abErr) return res.status(400).json({ message: abErr });
-
-  const moveValue = combat.getMoveValue({ type, base_weapon });
-  const character = await store.createCharacter({
-    team_id: teamId,
-    name: name.trim(),
-    type: String(type).toLowerCase(),
-    size: Number(size),
-    base_weapon: String(base_weapon).toLowerCase(),
-    move_value: moveValue,
-    abilities: JSON.stringify(abilities || []),
-    specials: JSON.stringify(type === "mage" ? specials || [] : []),
-    health: Number(stats.health),
-    strength: Number(stats.strength),
-    defense: Number(stats.defense),
-    magick: Number(stats.magick),
-    resistance: Number(stats.resistance),
-    speed: Number(stats.speed),
-    skill: Number(stats.skill),
-    knowledge: Number(stats.knowledge),
-    luck: Number(stats.luck),
-  });
+  const character = await store.createCharacter({ team_id: teamId, ...row });
   res.status(201).json({ character });
+}));
+
+app.put("/characters/:id", route(async (req, res) => {
+  const id = Number(req.params.id);
+  const current = await store.getCharacter(id);
+  if (!current) return res.status(404).json({ message: "Character not found" });
+
+  // Validate composition against the OTHER characters on the team (exclude this one).
+  const teammates = (await store.getCharacters(current.team_id)).filter((c) => c.id !== id);
+  const { error, row } = validateAndBuildCharacter(req.body, teammates);
+  if (error) return res.status(400).json({ message: error });
+
+  const character = await store.updateCharacter(id, row);
+  res.json({ character });
 }));
 
 app.delete("/characters/:id", route(async (req, res) => {

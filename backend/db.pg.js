@@ -104,6 +104,17 @@ module.exports = {
     const r = await q("SELECT * FROM characters WHERE id = $1", [id]);
     return hydrate(r.rows[0]);
   },
+  async updateCharacter(id, d) {
+    const r = await q(
+      `UPDATE characters SET
+         name=$1, type=$2, size=$3, base_weapon=$4, move_value=$5, abilities=$6, specials=$7,
+         health=$8, strength=$9, defense=$10, magick=$11, resistance=$12, speed=$13, skill=$14, knowledge=$15, luck=$16
+       WHERE id=$17 RETURNING *`,
+      [d.name, d.type, d.size, d.base_weapon, d.move_value, d.abilities, d.specials,
+       d.health, d.strength, d.defense, d.magick, d.resistance, d.speed, d.skill, d.knowledge, d.luck, id]
+    );
+    return hydrate(r.rows[0]);
+  },
   async deleteCharacter(id) {
     return q("DELETE FROM characters WHERE id = $1", [id]);
   },

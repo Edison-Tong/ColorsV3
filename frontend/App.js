@@ -59,7 +59,7 @@ function Routes() {
         </>
       ) : (
         <>
-          <Stack.Screen name="Home" component={HomeScreen} options={{ title: "ColorsV3" }} />
+          <Stack.Screen name="Home" component={HomeScreen} options={{ title: "The Keep" }} />
           <Stack.Screen name="TeamList" component={TeamListScreen} options={{ title: "Your Warbands" }} />
           <Stack.Screen name="TeamView" component={TeamViewScreen} options={{ title: "Warband" }} />
           <Stack.Screen name="CharCreation" component={CharCreationScreen} options={{ title: "Muster a Champion" }} />

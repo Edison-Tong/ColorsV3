@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert } from "react-native";
 import { api } from "../api";
 import { weaponsData } from "../data/weaponsData";
@@ -15,21 +15,28 @@ const SIZE_REQ = { 1: 1, 2: 2, 3: 2, 4: 1 };
 const baseStats = () => STAT_KEYS.reduce((o, k) => ((o[k] = STAT_MIN), o), {});
 
 export default function CharCreationScreen({ route, navigation }) {
-  const { teamId, existing = [] } = route.params;
+  const { teamId, existing = [], editChar = null } = route.params;
+  const isEdit = !!editChar;
 
-  // Composition availability from the rest of the team.
+  // Composition availability from the rest of the team (on edit, `existing` already excludes self).
   const sizeCounts = existing.reduce((a, c) => ((a[c.size] = (a[c.size] || 0) + 1), a), {});
   const mageCount = existing.filter((c) => c.type === "mage").length;
   const mageFull = mageCount >= 2;
 
-  const [name, setName] = useState("");
-  const [type, setType] = useState(null);
-  const [size, setSize] = useState(null);
-  const [weapon, setWeapon] = useState(null);
-  const [abilities, setAbilities] = useState([]);
-  const [specials, setSpecials] = useState([]);
-  const [stats, setStats] = useState(baseStats());
+  const [name, setName] = useState(editChar?.name || "");
+  const [type, setType] = useState(editChar?.type || null);
+  const [size, setSize] = useState(editChar?.size ?? null);
+  const [weapon, setWeapon] = useState(editChar?.base_weapon || null);
+  const [abilities, setAbilities] = useState(editChar?.abilities || []);
+  const [specials, setSpecials] = useState(editChar?.specials || []);
+  const [stats, setStats] = useState(
+    editChar
+      ? STAT_KEYS.reduce((o, k) => ((o[k] = Number(editChar[k])), o), {})
+      : baseStats()
+  );
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => { navigation.setOptions({ title: isEdit ? "Edit Champion" : "Muster a Champion" }); }, [isEdit]);
 
   const total = STAT_KEYS.reduce((s, k) => s + stats[k], 0);
 
@@ -83,11 +90,10 @@ export default function CharCreationScreen({ route, navigation }) {
     const err = validate();
     if (err) return Alert.alert("Hold on", err);
     setBusy(true);
+    const payload = { name: name.trim(), type, size, base_weapon: weapon, abilities, specials: type === "mage" ? specials : [], stats };
     try {
-      await api.createCharacter(teamId, {
-        name: name.trim(), type, size, base_weapon: weapon,
-        abilities, specials: type === "mage" ? specials : [], stats,
-      });
+      if (isEdit) await api.updateCharacter(editChar.id, payload);
+      else await api.createCharacter(teamId, payload);
       navigation.goBack();
     } catch (e) {
       Alert.alert("Error", e.message);
@@ -172,7 +178,7 @@ export default function CharCreationScreen({ route, navigation }) {
       )}
 
       <TornButton style={styles.submit} wrapStyle={busy && { opacity: 0.6 }} onPress={submit} disabled={busy}>
-        <Text style={styles.submitText}>{busy ? "Mustering…" : "⚜️ Muster Champion"}</Text>
+        <Text style={styles.submitText}>{busy ? "Saving…" : isEdit ? "💾 Save Changes" : "⚜️ Muster Champion"}</Text>
       </TornButton>
     </ScrollView>
   );

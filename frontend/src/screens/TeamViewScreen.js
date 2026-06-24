@@ -85,7 +85,15 @@ export default function TeamViewScreen({ route, navigation }) {
                 </Text>
                 <Text style={styles.abilityLine}>Abilities: {c.abilities.join(", ")}</Text>
                 {c.type === "mage" && <Text style={styles.abilityLine}>Specials: {c.specials.join(", ")}</Text>}
-                <Text style={styles.hint}>Long-press card to remove</Text>
+                <View style={styles.actionRow}>
+                  <TouchableOpacity style={[styles.actBtn, { backgroundColor: theme.primary }]}
+                    onPress={() => navigation.navigate("CharCreation", { teamId, existing: chars.filter((x) => x.id !== c.id), editChar: c })}>
+                    <Text style={styles.actText}>Edit</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.actBtn, { backgroundColor: theme.danger }]} onPress={() => removeChar(c)}>
+                    <Text style={[styles.actText, { color: "#fff" }]}>Remove</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             )}
           </TornButton>
@@ -126,7 +134,9 @@ const styles = StyleSheet.create({
   statV: { color: theme.text, fontSize: 16, fontWeight: "700" },
   derived: { color: theme.warn, fontSize: 12, marginTop: 4, marginBottom: 8 },
   abilityLine: { color: theme.textDim, fontSize: 13, marginTop: 2 },
-  hint: { color: theme.textDim, fontSize: 11, marginTop: 8, fontStyle: "italic" },
+  actionRow: { flexDirection: "row", gap: 8, marginTop: 10, justifyContent: "center" },
+  actBtn: { paddingVertical: 5, paddingHorizontal: 14, borderRadius: 5, alignItems: "center", borderWidth: 1, borderColor: theme.border },
+  actText: { fontFamily: FONTS.heading, color: "#23170a", fontSize: 11, letterSpacing: 0.5 },
   addBtn: { backgroundColor: theme.primary, borderRadius: 8, padding: 16, alignItems: "center", marginTop: 6, marginBottom: 30, borderWidth: 1, borderColor: theme.gold },
   addText: { fontFamily: FONTS.heading, color: "#23170a", fontSize: 16, letterSpacing: 1 },
   ready: { fontFamily: FONTS.heading, color: theme.good, textAlign: "center", marginTop: 10, marginBottom: 30, fontSize: 15, letterSpacing: 1 },

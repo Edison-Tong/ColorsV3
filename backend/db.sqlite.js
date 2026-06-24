@@ -62,6 +62,12 @@ const stmts = {
   charsForTeam: db.prepare("SELECT * FROM characters WHERE team_id = ? ORDER BY id"),
   charById: db.prepare("SELECT * FROM characters WHERE id = ?"),
   deleteCharacter: db.prepare("DELETE FROM characters WHERE id = ?"),
+  updateCharacter: db.prepare(`
+    UPDATE characters SET
+      name=@name, type=@type, size=@size, base_weapon=@base_weapon, move_value=@move_value,
+      abilities=@abilities, specials=@specials, health=@health, strength=@strength, defense=@defense,
+      magick=@magick, resistance=@resistance, speed=@speed, skill=@skill, knowledge=@knowledge, luck=@luck
+    WHERE id=@id RETURNING *`),
 };
 
 const safeParse = (s) => { try { return JSON.parse(s || "[]"); } catch { return []; } };
@@ -80,5 +86,6 @@ module.exports = {
   async createCharacter(data) { return hydrate(stmts.insertCharacter.get(data)); },
   async getCharacters(teamId) { return stmts.charsForTeam.all(teamId).map(hydrate); },
   async getCharacter(id) { return hydrate(stmts.charById.get(id)); },
+  async updateCharacter(id, data) { return hydrate(stmts.updateCharacter.get({ ...data, id })); },
   async deleteCharacter(id) { return stmts.deleteCharacter.run(id); },
 };

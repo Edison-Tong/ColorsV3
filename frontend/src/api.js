@@ -55,6 +55,7 @@ export const api = {
 
   getCharacters: (teamId) => req(`/teams/${teamId}/characters`),
   createCharacter: (teamId, payload) => req(`/teams/${teamId}/characters`, { method: "POST", body: JSON.stringify(payload) }),
+  updateCharacter: (id, payload) => req(`/characters/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
   deleteCharacter: (id) => req(`/characters/${id}`, { method: "DELETE" }),
 };
 
