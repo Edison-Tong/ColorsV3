@@ -4,6 +4,7 @@ import { api } from "../api";
 import { useAuth } from "../AuthContext";
 import { theme, FONTS } from "../theme";
 import { Torn, TornButton } from "../components/Torn";
+import { BackendSwitcher } from "../components/BackendSwitcher";
 
 export default function LoginScreen({ navigation }) {
   const { signIn } = useAuth();
@@ -43,6 +44,8 @@ export default function LoginScreen({ navigation }) {
           <Text style={styles.link}>No banner yet? Enlist here</Text>
         </TouchableOpacity>
       </Torn>
+
+      <BackendSwitcher />
     </KeyboardAvoidingView>
   );
 }

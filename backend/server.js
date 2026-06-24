@@ -1,5 +1,6 @@
 // ColorsV3 — Express REST (auth, teams, characters) + Socket.io real-time battle.
 
+require("dotenv").config(); // load backend/.env if present (must run before ./db)
 const express = require("express");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
@@ -75,69 +76,74 @@ function abilitiesValid(character) {
 
 // ───────────────────────────── Auth ─────────────────────────────
 
-app.post("/register", async (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ message: "Username and password required" });
-  if (store.getUserByName(username)) return res.status(409).json({ message: "Username already taken" });
-  try {
-    const hash = await bcrypt.hash(password, 10);
-    const user = store.createUser(username.trim(), hash);
-    res.status(201).json({ id: user.id, username: user.username });
-  } catch (e) {
-    if (String(e.message).includes("UNIQUE")) return res.status(409).json({ message: "Username already taken" });
-    console.error(e);
-    res.status(500).json({ message: "Server error" });
-  }
+// Wrap an async route so any rejection becomes a clean 500 instead of crashing.
+const route = (fn) => (req, res) => fn(req, res).catch((e) => {
+  console.error(`${req.method} ${req.path} error:`, e);
+  if (!res.headersSent) res.status(500).json({ message: "Server error" });
 });
 
-app.post("/login", async (req, res) => {
+app.post("/register", route(async (req, res) => {
   const { username, password } = req.body || {};
-  const user = store.getUserByName(username || "");
+  if (!username || !password) return res.status(400).json({ message: "Username and password required" });
+  if (await store.getUserByName(username)) return res.status(409).json({ message: "Username already taken" });
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    const user = await store.createUser(username.trim(), hash);
+    res.status(201).json({ id: user.id, username: user.username });
+  } catch (e) {
+    if (/unique|duplicate/i.test(String(e.message))) return res.status(409).json({ message: "Username already taken" });
+    throw e;
+  }
+}));
+
+app.post("/login", route(async (req, res) => {
+  const { username, password } = req.body || {};
+  const user = await store.getUserByName(username || "");
   if (!user) return res.status(401).json({ message: "Invalid username or password" });
   const ok = await bcrypt.compare(password || "", user.password);
   if (!ok) return res.status(401).json({ message: "Invalid username or password" });
   res.json({ id: user.id, username: user.username });
-});
+}));
 
 // ───────────────────────────── Teams ─────────────────────────────
 
-app.get("/teams", (req, res) => {
+app.get("/teams", route(async (req, res) => {
   const userId = Number(req.query.userId);
-  const teams = store.getTeams(userId).map((t) => {
-    const chars = store.getCharacters(t.id);
+  const teamRows = await store.getTeams(userId);
+  const teams = await Promise.all(teamRows.map(async (t) => {
+    const chars = await store.getCharacters(t.id);
     return { ...t, characters: chars, complete: chars.length === 6 };
-  });
+  }));
   res.json({ teams });
-});
+}));
 
-app.post("/teams", (req, res) => {
+app.post("/teams", route(async (req, res) => {
   const { userId, name } = req.body || {};
   if (!userId || !name) return res.status(400).json({ message: "userId and name required" });
-  const team = store.createTeam(userId, name.trim());
+  const team = await store.createTeam(userId, name.trim());
   res.status(201).json({ team: { ...team, characters: [] } });
-});
+}));
 
-app.delete("/teams/:id", (req, res) => {
-  const userId = Number(req.query.userId);
-  store.deleteTeam(Number(req.params.id), userId);
+app.delete("/teams/:id", route(async (req, res) => {
+  await store.deleteTeam(Number(req.params.id), Number(req.query.userId));
   res.json({ ok: true });
-});
+}));
 
-app.get("/teams/:id/characters", (req, res) => {
-  res.json({ characters: store.getCharacters(Number(req.params.id)) });
-});
+app.get("/teams/:id/characters", route(async (req, res) => {
+  res.json({ characters: await store.getCharacters(Number(req.params.id)) });
+}));
 
 // ───────────────────────────── Characters ─────────────────────────────
 
-app.post("/teams/:id/characters", (req, res) => {
+app.post("/teams/:id/characters", route(async (req, res) => {
   const teamId = Number(req.params.id);
-  const team = store.getTeam(teamId);
+  const team = await store.getTeam(teamId);
   if (!team) return res.status(404).json({ message: "Team not found" });
 
   const { name, type, size, base_weapon, abilities, specials, stats } = req.body || {};
   if (!name || !type || !size || !base_weapon || !stats) return res.status(400).json({ message: "Missing fields" });
 
-  const existing = store.getCharacters(teamId);
+  const existing = await store.getCharacters(teamId);
   const compErr = validateComposition(existing, { type, size });
   if (compErr) return res.status(400).json({ message: compErr });
 
@@ -149,7 +155,7 @@ app.post("/teams/:id/characters", (req, res) => {
   if (abErr) return res.status(400).json({ message: abErr });
 
   const moveValue = combat.getMoveValue({ type, base_weapon });
-  const character = store.createCharacter({
+  const character = await store.createCharacter({
     team_id: teamId,
     name: name.trim(),
     type: String(type).toLowerCase(),
@@ -169,12 +175,15 @@ app.post("/teams/:id/characters", (req, res) => {
     luck: Number(stats.luck),
   });
   res.status(201).json({ character });
-});
+}));
 
-app.delete("/characters/:id", (req, res) => {
-  store.deleteCharacter(Number(req.params.id));
+app.delete("/characters/:id", route(async (req, res) => {
+  await store.deleteCharacter(Number(req.params.id));
   res.json({ ok: true });
-});
+}));
+
+// Friendly landing so the root URL doesn't look broken ("Cannot GET /").
+app.get("/", (_req, res) => res.type("text").send("⚔️ ColorsV3 backend is running. Health check: /ping"));
 
 // Expose static game data so the frontend and any tools share one source.
 app.get("/gamedata", (_req, res) => res.json(weaponsData));
@@ -279,21 +288,21 @@ function startBattle(room) {
 io.on("connection", (socket) => {
   socket.data.code = null;
 
-  // Wrap handlers so exceptions surface in logs instead of being silently swallowed.
+  // Wrap handlers so exceptions (sync or async) surface in logs instead of being swallowed.
   const on = (ev, fn) =>
     socket.on(ev, (...args) => {
       const cb = typeof args[args.length - 1] === "function" ? args[args.length - 1] : null;
-      try {
-        fn(...args);
-      } catch (e) {
-        console.error(`socket handler '${ev}' error:`, e);
-        if (cb) cb({ error: "Server error: " + e.message });
-      }
+      Promise.resolve()
+        .then(() => fn(...args))
+        .catch((e) => {
+          console.error(`socket handler '${ev}' error:`, e);
+          if (cb) cb({ error: "Server error: " + e.message });
+        });
     });
 
   // Host creates a room with their team.
-  on("host", ({ userId, username, teamId }, cb) => {
-    const chars = store.getCharacters(Number(teamId));
+  on("host", async ({ userId, username, teamId }, cb) => {
+    const chars = await store.getCharacters(Number(teamId));
     if (chars.length !== 6) return cb && cb({ error: "Team must have 6 characters" });
     const code = genCode();
     rooms[code] = {
@@ -314,13 +323,13 @@ io.on("connection", (socket) => {
   });
 
   // Joiner enters a code with their team. Both teams present -> battle begins.
-  on("join", ({ userId, username, code, teamId }, cb) => {
+  on("join", async ({ userId, username, code, teamId }, cb) => {
     const room = rooms[String(code || "").toUpperCase()];
     if (!room) return cb && cb({ error: "Invalid code" });
     if (room.joinerId) return cb && cb({ error: "Room is full" });
     if (Number(userId) === room.hostId) return cb && cb({ error: "You cannot join your own room" });
 
-    const chars = store.getCharacters(Number(teamId));
+    const chars = await store.getCharacters(Number(teamId));
     if (chars.length !== 6) return cb && cb({ error: "Team must have 6 characters" });
 
     room.joinerId = Number(userId);
@@ -487,4 +496,10 @@ function cleanup(socket) {
   delete rooms[code];
 }
 
-server.listen(PORT, () => console.log(`ColorsV3 backend listening on :${PORT}`));
+store
+  .init()
+  .then(() => server.listen(PORT, () => console.log(`ColorsV3 backend listening on :${PORT}`)))
+  .catch((e) => {
+    console.error("Failed to initialize data store:", e);
+    process.exit(1);
+  });

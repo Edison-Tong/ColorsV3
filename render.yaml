@@ -1,0 +1,17 @@
+# Render Blueprint for the ColorsV3 backend.
+# Deploy: push this repo to GitHub, then in Render → New → Blueprint, pick the repo.
+# Set DATABASE_URL (from Neon) in the service's Environment after it's created.
+services:
+  - type: web
+    name: colorsv3-backend
+    runtime: node
+    rootDir: backend
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /ping
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: DATABASE_URL
+        sync: false   # paste your Neon connection string in the Render dashboard

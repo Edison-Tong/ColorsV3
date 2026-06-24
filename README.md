@@ -160,5 +160,38 @@ Default movement is **5 (melee) / 4 (mage)**, +1 for the Wind weapon.
 ## Tech reference
 
 REST: `/register`, `/login`, `/teams`, `/teams/:id/characters`, `/characters/:id`, `/gamedata`, `/ping`.
-Socket events: `host`, `join` → `battleStart`; then `move`, `attack` (→ `attackResult`), `endTurn`,
-`leaveRoom`; server pushes `state` after every change.
+Socket events: `host`, `join` → `battleStart`; then `move`, `attack` (→ `attackResult`), `cast`
+(→ `specialResult`), `endTurn`, `leaveRoom`; server pushes `state` after every change.
+
+---
+
+## Going live (deploy + TestFlight)
+
+The app talks to a backend whose URL is set in `frontend/src/config.js`. In a **dev build** it
+defaults to your PC (`local`) and shows a tappable LOCAL/PROD switch on the login screen; in a
+**production build** it's locked to `prod` and the switch is hidden.
+
+The backend **auto-selects its database**: a local SQLite file when `DATABASE_URL` is unset
+(zero-config dev), or **PostgreSQL** when `DATABASE_URL` is set (cloud, persists forever).
+
+### 1. Database — Neon (free, persists indefinitely)
+1. Create a project at neon.tech → copy the connection string (`postgresql://…?sslmode=require`).
+2. That's it — schema tables are created automatically on first backend boot.
+
+### 2. Backend — Render (free; cold-starts after ~15 min idle)
+1. Push this repo to GitHub.
+2. Render → **New → Blueprint** → pick the repo (uses `render.yaml`).
+3. In the service's **Environment**, set `DATABASE_URL` to your Neon string.
+4. Deploy. Confirm it's up: open `https://<your-service>.onrender.com/ping` → `{"ok":true}`.
+   - Want always-on with no cold start? The same code runs on **Koyeb** (free always-on) or **Fly.io** unchanged — it only needs `PORT` + `DATABASE_URL`.
+
+### 3. Point the app at it
+In `frontend/src/config.js`, set `ENV.prod` to your `https://…onrender.com` URL.
+
+### 4. TestFlight — replacing ColorsV2
+ColorsV3 can ship into V2's existing TestFlight by reusing the same bundle id. Set in
+`frontend/app.json` under `expo.ios`: `"bundleIdentifier": "com.pakitong.colorsgame"` (and add an
+app icon/splash). Then `eas build -p ios` and `eas submit -p ios`. Apple identifies the app by its
+bundle id, so this lands as a new build of the same app — testers get it as an update.
+Note: V2 data does **not** migrate (different schema); testers start fresh on V3.
+

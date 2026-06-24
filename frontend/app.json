@@ -1,23 +1,40 @@
 {
   "expo": {
-    "name": "ColorsV3",
-    "slug": "colorsv3",
-    "version": "1.0.0",
+    "name": "Colors",
+    "slug": "colors-game",
+    "owner": "pakitong",
+    "version": "5.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
+    "icon": "./assets/icon.png",
     "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
       "backgroundColor": "#1a130c"
     },
-    "assetBundlePatterns": [
-      "**/*"
-    ],
+    "assetBundlePatterns": ["**/*"],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pakitong.colorsgame",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
-    "android": {},
-    "web": {},
-    "plugins": [
-      "expo-font"
-    ]
+    "android": {
+      "package": "com.pakitong.colorsgame",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1a130c"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": ["expo-font"],
+    "extra": {
+      "eas": {
+        "projectId": "17ac029a-e233-4ac6-b7a6-77267f442ca8"
+      }
+    }
   }
 }

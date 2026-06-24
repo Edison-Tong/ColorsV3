@@ -1,8 +1,10 @@
+import { useEffect, useState } from "react";
 import { NavigationContainer, DefaultTheme } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 import { View, ActivityIndicator, Text as RNText } from "react-native";
 import { useFonts } from "expo-font";
+import { initBackend } from "./src/api";
 import { Cinzel_400Regular, Cinzel_700Bold } from "@expo-google-fonts/cinzel";
 import { MedievalSharp_400Regular } from "@expo-google-fonts/medievalsharp";
 import { EBGaramond_500Medium, EBGaramond_700Bold } from "@expo-google-fonts/eb-garamond";
@@ -73,8 +75,10 @@ export default function App() {
   const [fontsLoaded] = useFonts({
     Cinzel_400Regular, Cinzel_700Bold, MedievalSharp_400Regular, EBGaramond_500Medium, EBGaramond_700Bold,
   });
+  const [backendReady, setBackendReady] = useState(false);
+  useEffect(() => { initBackend().finally(() => setBackendReady(true)); }, []);
 
-  if (!fontsLoaded) {
+  if (!fontsLoaded || !backendReady) {
     return <View style={{ flex: 1, backgroundColor: theme.bg, justifyContent: "center" }}><ActivityIndicator color={theme.gold} size="large" /></View>;
   }
 
