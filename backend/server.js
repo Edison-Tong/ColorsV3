@@ -10,6 +10,7 @@ const { Server } = require("socket.io");
 const store = require("./db");
 const { weaponsData } = require("./weaponsData");
 const combat = require("./combat");
+const board = require("./board");
 
 const app = express();
 app.use(cors());
@@ -209,8 +210,8 @@ app.get("/ping", (_req, res) => res.json({ ok: true }));
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
-const BOARD_ROWS = 6;
-const BOARD_COLS = 8;
+const BOARD_ROWS = board.BOARD_ROWS;
+const BOARD_COLS = board.BOARD_COLS;
 const rooms = {}; // code -> room
 
 function genCode() {
@@ -297,7 +298,7 @@ function startBattle(room) {
   b.acted = {};
   b.over = false;
   b.winnerId = null;
-  io.to(room.code).emit("battleStart", { ...publicState(room), firstUserId: first });
+  io.to(room.code).emit("battleStart", { ...publicState(room), firstUserId: first, terrain: board.terrain });
 }
 
 io.on("connection", (socket) => {

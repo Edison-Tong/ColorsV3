@@ -11,7 +11,8 @@
     "dev": "node --watch server.js",
     "test": "node test/combat.test.js",
     "test:e2e": "node test/integration.js",
-    "db:view": "node db-view.js"
+    "db:view": "node db-view.js",
+    "seed": "node seed.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

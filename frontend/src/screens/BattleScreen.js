@@ -1,11 +1,13 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, Modal, Dimensions, Alert, Pressable, Animated, Easing, ScrollView } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, Modal, Alert, Pressable, Animated, Easing, ScrollView, Dimensions } from "react-native";
 import { getSocket } from "../api";
 import { theme, FONTS, WEAPON_GLYPH } from "../theme";
 import { Torn, TornButton } from "../components/Torn";
+import { TILES, tileFor } from "../data/board";
 import { computeAllStats, getMoveValue, getAttackRange, findAbility, manhattan, inRange, previewStrike } from "../logic/combat";
 
-const { width } = Dimensions.get("window");
+const CELL = 46; // fixed tile size; the board scrolls when bigger than the screen
+const { width: SCREEN_W } = Dimensions.get("window");
 
 // Outcome → emoji + label, used everywhere so combat reads at a glance.
 const OUTCOME = {
@@ -18,19 +20,25 @@ const OUTCOME = {
 export default function BattleScreen({ route, navigation }) {
   const { code, userId, initialState } = route.params;
   const [state, setState] = useState(initialState);
+  const [terrain] = useState(initialState.terrain || []); // 2D tile-key grid, fixed for the match
   const [selectedId, setSelectedId] = useState(null);
   const [attackTarget, setAttackTarget] = useState(null); // enemy unit object
   const [casting, setCasting] = useState(null);           // special object being aimed
   const [result, setResult] = useState(null);             // last attack, for the emoji overlay
   const [castResult, setCastResult] = useState(null);     // last special cast, for its overlay
+  const vScroll = useRef(null);
+  const hScroll = useRef(null);
+  const scrolledRef = useRef(false);
+  const hCenteredRef = useRef(false);
   const socket = getSocket();
 
   const rows = state.rows, cols = state.cols;
-  const cell = Math.floor((width - 16) / cols);
+  const cell = CELL;
 
   const amHost = state.hostId === userId;
   const myTurn = state.turnUserId === userId && !state.over;
   const fromView = (p) => (amHost ? p : { r: rows - 1 - p.r, c: cols - 1 - p.c });
+  const cellAt = (r, c) => (terrain[r] && terrain[r][c]) || { t: "normal", hg: false };
 
   useEffect(() => {
     const onState = (s) => setState(s);
@@ -152,36 +160,49 @@ export default function BattleScreen({ route, navigation }) {
       </View>
 
       <Text style={styles.sideLabel}>⬆️ Opponent</Text>
-      <View style={styles.board}>
-        {viewGrid.map((row, vr) => (
-          <View key={vr} style={{ flexDirection: "row" }}>
-            {row.map((abs, vc) => {
-              const occId = occupantAt(positions, abs);
-              const u = occId != null ? units[occId] : null;
-              const mine = u && u.ownerId === userId;
-              const isSelected = occId === selectedId;
-              const isMove = moveCells.has(`${abs.r}:${abs.c}`);
-              const isTarget = occId != null && targetableIds.has(occId);
-              const isCast = occId != null && castTargets.has(occId);
-              const dark = (abs.r + abs.c) % 2 === 0;
-              return (
-                <TouchableOpacity key={vc} activeOpacity={0.7} onPress={() => onCellPress(abs)}
-                  style={[styles.cell, { width: cell, height: cell, backgroundColor: dark ? theme.boardDark : theme.boardLight },
-                    isMove && styles.cellMove, isTarget && styles.cellTarget, isCast && styles.cellCast, isSelected && styles.cellSelected]}>
-                  {u && (
-                    <View style={[styles.token, { backgroundColor: mine ? theme.mine : theme.enemy, opacity: u.alive ? 1 : 0.25 }]}>
-                      <Text style={styles.tokenGlyph}>{u.alive ? (WEAPON_GLYPH[u.base_weapon] || "⚔️") : "💀"}</Text>
-                      {u.alive && <View style={styles.hpBar}><View style={[styles.hpFill, { width: `${Math.max(0, (u.health / u.maxHealth) * 100)}%` }]} /></View>}
-                      {isTarget && <Text style={styles.cornerPip}>⚔️</Text>}
-                      {isCast && casting && <Text style={styles.cornerPip}>✨</Text>}
-                    </View>
-                  )}
-                </TouchableOpacity>
-              );
-            })}
+      {/* Big board: scrolls vertically (outer) and horizontally (inner). */}
+      <ScrollView ref={vScroll} style={styles.boardViewport} contentContainerStyle={{ alignItems: "center" }}
+        onContentSizeChange={() => { if (!scrolledRef.current && vScroll.current) { vScroll.current.scrollToEnd({ animated: false }); scrolledRef.current = true; } }}>
+        <ScrollView ref={hScroll} horizontal contentContainerStyle={{ padding: 6 }} showsHorizontalScrollIndicator
+          onContentSizeChange={(w) => { if (!hCenteredRef.current && hScroll.current) { hScroll.current.scrollTo({ x: Math.max(0, (w - SCREEN_W) / 2), animated: false }); hCenteredRef.current = true; } }}>
+          <View style={styles.board}>
+            {viewGrid.map((row, vr) => (
+              <View key={vr} style={{ flexDirection: "row" }}>
+                {row.map((abs, vc) => {
+                  const occId = occupantAt(positions, abs);
+                  const u = occId != null ? units[occId] : null;
+                  const mine = u && u.ownerId === userId;
+                  const isSelected = occId === selectedId;
+                  const isMove = moveCells.has(`${abs.r}:${abs.c}`);
+                  const isTarget = occId != null && targetableIds.has(occId);
+                  const isCast = occId != null && castTargets.has(occId);
+                  const tc = cellAt(abs.r, abs.c);
+                  const tile = tileFor(tc.t);
+                  return (
+                    <TouchableOpacity key={vc} activeOpacity={0.7} onPress={() => onCellPress(abs)}
+                      style={[styles.cell, { width: cell, height: cell, backgroundColor: tile.color }, tc.hg && styles.cellHigh, isSelected && styles.cellSelected]}>
+                      {!u && !!tile.glyph && <Text style={styles.tileGlyph}>{tile.glyph}</Text>}
+                      {!u && tc.stairs && <Stairs />}
+                      {tc.hg && <View style={styles.hgBadge}><Text style={styles.hgText}>HG</Text></View>}
+                      {isMove && <View style={[styles.overlay, styles.ovMove]} />}
+                      {isTarget && <View style={[styles.overlay, styles.ovTarget]} />}
+                      {isCast && <View style={[styles.overlay, styles.ovCast]} />}
+                      {u && (
+                        <View style={[styles.token, { backgroundColor: mine ? theme.mine : theme.enemy, opacity: u.alive ? 1 : 0.25 }]}>
+                          <Text style={styles.tokenGlyph}>{u.alive ? (WEAPON_GLYPH[u.base_weapon] || "⚔️") : "💀"}</Text>
+                          {u.alive && <View style={styles.hpBar}><View style={[styles.hpFill, { width: `${Math.max(0, (u.health / u.maxHealth) * 100)}%` }]} /></View>}
+                          {isTarget && <Text style={styles.cornerPip}>⚔️</Text>}
+                          {isCast && casting && <Text style={styles.cornerPip}>✨</Text>}
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ))}
           </View>
-        ))}
-      </View>
+        </ScrollView>
+      </ScrollView>
       <Text style={styles.sideLabel}>⬇️ Your team</Text>
 
       {/* Casting banner */}
@@ -195,6 +216,9 @@ export default function BattleScreen({ route, navigation }) {
       {/* Selected unit panel */}
       {selected
         ? <StatsPanel u={selected} moveLeft={moveLeft} maxRange={maxRange} acted={hasActed} mine={isMine} myTurn={myTurn}
+            tile={selPos ? tileFor(cellAt(selPos.r, selPos.c).t) : null}
+            high={selPos ? cellAt(selPos.r, selPos.c).hg : false}
+            stairs={selPos ? cellAt(selPos.r, selPos.c).stairs : false}
             specials={mySpecials} casting={casting} onCast={(name) => setCasting(findAbility(selected, name))} />
         : <View style={styles.infoBar}><Text style={styles.infoHint}>{myTurn ? "Tap one of your units (bottom) to act." : "Waiting for opponent…"}</Text></View>}
 
@@ -258,7 +282,7 @@ function GameOverOverlay({ win, onExit }) {
 }
 
 // ─────────────────────────── Stats panel ───────────────────────────
-function StatsPanel({ u, moveLeft, maxRange, acted, mine, myTurn, specials, casting, onCast }) {
+function StatsPanel({ u, moveLeft, maxRange, acted, mine, myTurn, specials, casting, onCast, tile, high, stairs }) {
   const s = computeAllStats(u, null);
   const prot = u.type === "mage" ? s.protection.magic : s.protection.melee;
   return (
@@ -269,6 +293,7 @@ function StatsPanel({ u, moveLeft, maxRange, acted, mine, myTurn, specials, cast
           <View style={{ flex: 1 }}>
             <Text style={styles.statsName}>{u.name}</Text>
             <Text style={styles.statsSub}>{cap(u.type)} · Size {u.size} · {cap(u.base_weapon)}</Text>
+            {tile && <Text style={[styles.statsSub, { color: theme.warn }]}>{tile.glyph || "🟩"} On {tile.name}{high ? " · ⬆ High Ground" : ""}{stairs ? " · 🪜 Stairway" : ""}</Text>}
           </View>
           <View style={{ alignItems: "flex-end" }}>
             <Text style={styles.hpText}>❤️ {u.health}/{u.maxHealth}</Text>
@@ -401,6 +426,17 @@ function CastCard({ res, units, userId }) {
   );
 }
 
+// Little CSS staircase drawn for stairway tiles (ascends bottom-left → top-right).
+function Stairs() {
+  return (
+    <View style={StyleSheet.absoluteFill} pointerEvents="none">
+      <View style={[styles.step, { bottom: 6, left: 8, width: 24 }]} />
+      <View style={[styles.step, { bottom: 13, left: 13, width: 17 }]} />
+      <View style={[styles.step, { bottom: 20, left: 18, width: 10 }]} />
+    </View>
+  );
+}
+
 function occupantAt(positions, abs) {
   for (const [id, p] of Object.entries(positions)) if (p.r === abs.r && p.c === abs.c) return Number(id);
   return null;
@@ -413,15 +449,22 @@ const styles = StyleSheet.create({
   leave: { color: theme.textDim, fontSize: 16 },
   turn: { fontFamily: FONTS.heading, fontSize: 15, letterSpacing: 1 },
   code: { fontFamily: FONTS.headingReg, color: theme.textDim },
-  sideLabel: { fontFamily: FONTS.headingReg, color: theme.textDim, fontSize: 12, textAlign: "center", marginVertical: 3, letterSpacing: 1 },
-  board: { alignSelf: "center", borderWidth: 3, borderColor: theme.border },
-  cell: { alignItems: "center", justifyContent: "center", borderWidth: 0.5, borderColor: "#0e0a06" },
-  cellMove: { backgroundColor: theme.moveHi },
+  sideLabel: { fontFamily: FONTS.headingReg, color: theme.textDim, fontSize: 12, textAlign: "center", marginVertical: 2, letterSpacing: 1 },
+  boardViewport: { flex: 1, alignSelf: "stretch" },
+  board: { borderWidth: 3, borderColor: theme.border },
+  cell: { alignItems: "center", justifyContent: "center", borderWidth: 0.5, borderColor: "#00000040" },
   cellSelected: { borderColor: theme.gold, borderWidth: 2.5 },
-  cellTarget: { backgroundColor: theme.targetHi },
-  cellCast: { backgroundColor: theme.castHi },
+  cellHigh: { borderWidth: 2, borderColor: "#1c1a12" },
+  tileGlyph: { fontSize: 20, opacity: 0.9 },
+  step: { position: "absolute", height: 4, backgroundColor: "#5a4a30", borderRadius: 1 },
+  hgBadge: { position: "absolute", top: 1, left: 1, backgroundColor: "rgba(18,14,7,0.85)", paddingHorizontal: 2, borderRadius: 2 },
+  hgText: { color: "#ffe08a", fontSize: 7, fontWeight: "800", letterSpacing: 0.3 },
+  overlay: { ...StyleSheet.absoluteFillObject },
+  ovMove: { backgroundColor: "rgba(120,180,90,0.5)" },
+  ovTarget: { backgroundColor: "rgba(200,70,60,0.55)" },
+  ovCast: { backgroundColor: "rgba(120,200,130,0.5)" },
   token: { width: "84%", height: "84%", borderRadius: 4, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#00000055" },
-  tokenGlyph: { fontSize: 16 },
+  tokenGlyph: { fontSize: 18 },
   hpBar: { position: "absolute", bottom: 2, left: 3, right: 3, height: 3, backgroundColor: "#00000088", borderRadius: 2 },
   hpFill: { height: 3, backgroundColor: theme.hp, borderRadius: 2 },
   cornerPip: { position: "absolute", top: -2, right: -2, fontSize: 10 },
