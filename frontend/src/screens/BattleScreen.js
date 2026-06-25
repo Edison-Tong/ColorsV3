@@ -181,8 +181,12 @@ export default function BattleScreen({ route, navigation }) {
                   return (
                     <TouchableOpacity key={vc} activeOpacity={0.7} onPress={() => onCellPress(abs)}
                       style={[styles.cell, { width: cell, height: cell, backgroundColor: tile.color }, tc.hg && styles.cellHigh, isSelected && styles.cellSelected]}>
-                      {!u && !!tile.glyph && <Text style={styles.tileGlyph}>{tile.glyph}</Text>}
-                      {!u && tc.stairs && <Stairs />}
+                      {!u && (
+                        <>
+                          {tc.stairs && <Stairs dir={tc.sd} joinerMirror={!amHost} />}
+                          {!!tile.glyph && <Text style={styles.cornerGlyph}>{tile.glyph}</Text>}
+                        </>
+                      )}
                       {tc.hg && <View style={styles.hgBadge}><Text style={styles.hgText}>HG</Text></View>}
                       {isMove && <View style={[styles.overlay, styles.ovMove]} />}
                       {isTarget && <View style={[styles.overlay, styles.ovTarget]} />}
@@ -426,13 +430,24 @@ function CastCard({ res, units, userId }) {
   );
 }
 
-// Little CSS staircase drawn for stairway tiles (ascends bottom-left → top-right).
-function Stairs() {
+// Hand-built staircase: stacked treads, each higher one shorter and offset right,
+// with a lit top edge and shadowed riser so it reads as steps climbing up-right.
+function Stairs({ dir, joinerMirror }) {
+  const N = 4;
+  // dir: "flipX"/"flipY" mirror; "cw90"/"ccw90" or any number (degrees, +clockwise) rotate.
+  const t = [];
+  if (dir === "flipX") t.push({ scaleX: -1 });
+  else if (dir === "flipY") t.push({ scaleY: -1 });
+  else if (dir === "cw90") t.push({ rotate: "90deg" });
+  else if (dir === "ccw90") t.push({ rotate: "-90deg" });
+  else if (dir && !isNaN(Number(dir))) t.push({ rotate: `${Number(dir)}deg` });
+  if (joinerMirror) t.push({ scaleX: -1 }); // joiner sees the board flipped, so mirror stairs on the vertical axis
+  const transform = t.length ? t : undefined;
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="none">
-      <View style={[styles.step, { bottom: 6, left: 8, width: 24 }]} />
-      <View style={[styles.step, { bottom: 13, left: 13, width: 17 }]} />
-      <View style={[styles.step, { bottom: 20, left: 18, width: 10 }]} />
+    <View style={[styles.stairsBox, transform && { transform }]} pointerEvents="none">
+      {Array.from({ length: N }).map((_, i) => (
+        <View key={i} style={[styles.tread, { bottom: 4 + i * 8, left: 4 + i * 8, right: 4, height: 8 }]} />
+      ))}
     </View>
   );
 }
@@ -456,7 +471,15 @@ const styles = StyleSheet.create({
   cellSelected: { borderColor: theme.gold, borderWidth: 2.5 },
   cellHigh: { borderWidth: 2, borderColor: "#1c1a12" },
   tileGlyph: { fontSize: 20, opacity: 0.9 },
-  step: { position: "absolute", height: 4, backgroundColor: "#5a4a30", borderRadius: 1 },
+  cornerGlyph: { position: "absolute", top: 0, right: 1, fontSize: 13 },
+  stairsBox: { ...StyleSheet.absoluteFillObject },
+  tread: {
+    position: "absolute",
+    backgroundColor: "#e6dcc2",            // lit tread
+    borderTopWidth: 1.5, borderTopColor: "#fbf4e2",   // highlight on the step edge
+    borderBottomWidth: 2, borderBottomColor: "#5b4a2c", // shadowed riser below
+    borderLeftWidth: 1.5, borderLeftColor: "#7a6438",
+  },
   hgBadge: { position: "absolute", top: 1, left: 1, backgroundColor: "rgba(18,14,7,0.85)", paddingHorizontal: 2, borderRadius: 2 },
   hgText: { color: "#ffe08a", fontSize: 7, fontWeight: "800", letterSpacing: 0.3 },
   overlay: { ...StyleSheet.absoluteFillObject },

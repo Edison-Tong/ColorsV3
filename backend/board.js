@@ -37,22 +37,27 @@ const set = (coord, cell) => { overrides[`${Number(coord.slice(1)) - 1},${COL(co
 // Fort courtyard: fort terrain, NOT high ground (the surrounding `f` walls stay high ground).
 ["D5", "E5", "E6", "D7", "D8"].forEach((c) => set(c, { t: "fort", hg: false }));
 // Fort courtyard tiles that also carry a stairway up to the walls.
-["D6", "E7"].forEach((c) => set(c, { t: "fort", hg: false, stairs: true }));
-// A castle tile that also has a stairway.
-set("U7", { t: "castle", hg: false, stairs: true });
+// `sd` is the stair direction: "" climbs up-right (default), flipX = up-left, flipY = upside down.
+set("D6", { t: "fort", hg: false, stairs: true, sd: "flipX" });
+set("E7", { t: "fort", hg: false, stairs: true });
+// A castle tile that also has a stairway (mirrored like D6).
+set("U7", { t: "castle", hg: false, stairs: true, sd: "flipX" });
+// A plain stairway rotated 45° clockwise. (sd can be "flipX"/"flipY", "cw90"/"ccw90",
+// or any number of degrees — positive is clockwise.)
+set("J3", { t: "normal", hg: false, stairs: true, sd: "0" });
 
 function parseCell(ch) {
-  if (ch === "f") return { t: "fort", hg: true, stairs: false };      // forts/walls = high ground
-  if (ch === "S") return { t: "normal", hg: false, stairs: true };    // plain stairway
+  if (ch === "f") return { t: "fort", hg: true, stairs: false, sd: "" };      // forts/walls = high ground
+  if (ch === "S") return { t: "normal", hg: false, stairs: true, sd: "" };    // plain stairway
   const up = ch.toUpperCase();
-  return { t: BASE[up] || "normal", hg: ch !== up, stairs: false };
+  return { t: BASE[up] || "normal", hg: ch !== up, stairs: false, sd: "" };
 }
 
 const terrain = LAYOUT.map((row, r) =>
   row.split("").map((ch, c) => {
     const base = parseCell(ch);
     const ov = overrides[`${r},${c}`];
-    return ov ? { t: ov.t, hg: !!ov.hg, stairs: !!ov.stairs } : base;
+    return ov ? { t: ov.t, hg: !!ov.hg, stairs: !!ov.stairs, sd: ov.sd || "" } : base;
   })
 );
 
@@ -60,7 +65,7 @@ const BOARD_ROWS = LAYOUT.length;
 const BOARD_COLS = LAYOUT[0].length;
 
 function tileAt(r, c) {
-  return (terrain[r] && terrain[r][c]) || { t: "normal", hg: false, stairs: false };
+  return (terrain[r] && terrain[r][c]) || { t: "normal", hg: false, stairs: false, sd: "" };
 }
 
 module.exports = { BOARD_ROWS, BOARD_COLS, terrain, tileAt };
