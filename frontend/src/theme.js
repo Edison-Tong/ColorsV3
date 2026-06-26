@@ -12,8 +12,8 @@ export const theme = {
   danger: "#a32a1d",    // blood crimson
   good: "#6c8a3a",      // moss / forest green
   warn: "#cf9433",      // amber torchlight
-  mine: "#3a5d8f",      // heraldic steel-blue banner
-  enemy: "#9c2f2f",     // heraldic crimson banner
+  mine: "#2f7bf0",      // bright banner blue (vivid for board visibility)
+  enemy: "#ee3b3b",     // bright banner red
 
   // board tones (carved stone & wood)
   boardDark: "#241a10",

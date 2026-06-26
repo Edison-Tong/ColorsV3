@@ -51,7 +51,7 @@ export const weaponsData = {
       { name: "Throwing Knives", "hit%": 80, str: -1, range: 2, uses: 1, type: "Damage", effect: "Throws a knife hitting an enemy from 2 spaces away" },
       { name: "Puncture", "hit%": 80, range: 1, uses: 1, type: "Piercing", effect: "Slips the dagger between armor plates, negating enemy protection" },
       { name: "Flurry", "hit%": 75, str: -1, range: 1, uses: 1, type: "Radial", effect: "Spins violently throwing knives in each direction (x pattern)" },
-      { name: "Pin", "hit%": 85, range: 1, uses: 1, type: "Immobalizing", effect: "Pins enemy feet to the floor, immobilized for one turn" },
+      { name: "Pin", "hit%": 85, range: 1, uses: 1, type: "Immobilizing", effect: "Pins enemy feet to the floor, immobilized for one turn" },
       { name: "Stagnate", "hit%": 85, range: 1, uses: 1, type: "Slowing", effect: "Stabs the enemy with a toxin, slowing their movement for a turn." },
       { name: "Blitz", "hit%": 75, def: -1, range: 1, uses: 1, type: "Brave", effect: "Attacks the enemy twice before the other can attack." },
     ],
@@ -103,7 +103,7 @@ export const weaponsData = {
       { name: "Thunder", "hit%": 80, spd: 1, range: 2, uses: 1, type: "Shocking", effect: "Thunder shocks an enemy for 2 turns" },
     ],
     grass: [
-      { name: "Leech Life", "hit%": 80, range: 1, uses: 1, type: "Absorbtion", effect: "The enemy's life force is tapped into and absorbed" },
+      { name: "Leech Life", "hit%": 80, range: 1, uses: 1, type: "Absorption", effect: "The enemy's life force is tapped into and absorbed" },
       { name: "Natures Grasp", "hit%": 80, mgk: -1, range: 2, uses: 1, type: "Radial", effect: "Vines grab three units and pull them in 1 space" },
       { name: "Pin Needle", "hit%": 85, range: 2, uses: 1, type: "Poisoning", effect: "Poison needles damage the enemy for 2 turns" },
     ],
@@ -118,7 +118,7 @@ export const weaponsData = {
       { name: "Static", "hit%": 80, range: 2, uses: 1, type: "Shocking", effect: "Winds combine to shock the enemy for 2 turns" },
     ],
     light: [
-      { name: "Aura", "hit%": 85, mgk: -1, res: 6, range: 1, uses: 1, type: "Damaging", effect: "A powerful aura covers the mage as they strike" },
+      { name: "Aura", "hit%": 85, mgk: -1, res: 6, range: 1, uses: 1, type: "Damage", effect: "A powerful aura covers the mage as they strike" },
       { name: "Ostracism", "hit%": 85, mgk: -2, range: 2, uses: 1, type: "Radial", effect: "2 nonbelievers are banished (y pattern), pushed back 2 spaces" },
       { name: "Pillar Of Light", "hit%": 80, mgk: 1, range: 2, uses: 1, type: "Burning", effect: "A light so bright it burns the enemy for 2 turns" },
     ],

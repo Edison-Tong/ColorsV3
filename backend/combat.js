@@ -49,8 +49,48 @@ function inRange(fromPos, toPos, range) {
   return d > 0 && d <= range;
 }
 
+// Terrain rule for a single orthogonal step from tile `a` to adjacent tile `b`
+// (each is { hg, stairs }):
+//   - Entering high ground (b.hg) is only allowed from a stair or high-ground tile.
+//   - Leaving high ground (a.hg) is only allowed onto a stair or high-ground tile.
+function stepAllowed(a, b) {
+  if (a.hg && !(b.hg || b.stairs)) return false;
+  if (b.hg && !(a.hg || a.stairs)) return false;
+  return true;
+}
+
+// Breadth-first reachable cells from `start` within `budget` steps. Movement is
+// 4-directional; each step costs 1; units block the path; terrain obeys stepAllowed.
+// tileAt(r,c) -> { hg, stairs }; isBlocked(r,c) -> bool (an enemy/ally occupies it).
+// Returns { cells: Set("r:c"), dist: Map("r:c" -> steps) } (excludes the start cell).
+function reachable(start, budget, tileAt, isBlocked, rows, cols) {
+  const k = (r, c) => r + ":" + c;
+  const dist = new Map([[k(start.r, start.c), 0]]);
+  const cells = new Set();
+  const q = [{ r: start.r, c: start.c }];
+  for (let head = 0; head < q.length; head++) {
+    const cur = q[head];
+    const d = dist.get(k(cur.r, cur.c));
+    if (d >= budget) continue;
+    const a = tileAt(cur.r, cur.c);
+    const nbrs = [[cur.r - 1, cur.c], [cur.r + 1, cur.c], [cur.r, cur.c - 1], [cur.r, cur.c + 1]];
+    for (const [nr, nc] of nbrs) {
+      if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+      const nk = k(nr, nc);
+      if (dist.has(nk) || isBlocked(nr, nc)) continue;
+      if (!stepAllowed(a, tileAt(nr, nc))) continue;
+      dist.set(nk, d + 1);
+      cells.add(nk);
+      q.push({ r: nr, c: nc });
+    }
+  }
+  return { cells, dist };
+}
+
 // Full stat block for a character. `ability` (optional) folds its stat deltas + hit% into the attack.
-function computeAllStats(character, ability) {
+// `defMult` (default 1) scales the BASE defense stat — used for terrain "Def" effects so it
+// propagates to everything defense feeds: melee protection AND block.
+function computeAllStats(character, ability, defMult = 1) {
   const weapon = getWeaponStats(character);
   const mage = isMage(character);
   const ab = ability || {};
@@ -64,9 +104,10 @@ function computeAllStats(character, ability) {
   const wKnl = num(weapon.knl) + num(ab.knl);
   const wLck = num(weapon.lck) + num(ab.lck);
 
+  const dfBase = num(character.defense) * defMult; // terrain Def multiplier hits the base defense stat
   const power = mage ? num(character.magick) + wMgk : num(character.strength) + wStr;
   const prot = {
-    melee: num(character.defense) + wDef,
+    melee: dfBase + wDef,
     magic: num(character.resistance) + wRes,
   };
 
@@ -74,7 +115,7 @@ function computeAllStats(character, ability) {
   const skl = num(character.skill) + wSkl;
   const knl = num(character.knowledge) + wKnl;
   const lck = num(character.luck) + wLck;
-  const def = num(character.defense) + wDef;
+  const def = dfBase + wDef;
   const res = num(character.resistance) + wRes;
 
   // Size modifiers (ColorsV2 BattleScreen.js:145-165)
@@ -137,44 +178,98 @@ function strike(srcStats, tgtStats, rng) {
   return { type: "hit", damage: baseDamage, hitPct };
 }
 
+// ── Terrain combat effects ──────────────────────────────────────────────────
+// Per-terrain stat multipliers (applied to the unit standing on that tile during combat).
+// def multiplies melee protection (the defense base stat); acc/eva multiply the derived stats.
+const TERRAIN_FX = {
+  town: { def: 1.1, acc: 0.85, eva: 1.15 },
+  castle: { def: 1.15, acc: 1.15, eva: 1.15 },
+  forest: { eva: 1.2 },
+  fort: { def: 1.1, acc: 1.1, eva: 1.15 },
+  water: { acc: 0.85, eva: 0.85 },
+  desert: { acc: 0.8, eva: 0.8 },
+  mountain: { acc: 1.15, eva: 0.85 },
+};
+const NORMAL_TILE = { t: "normal", hg: false };
+
+// High ground is a relative ACCURACY edge: the high unit ×1.15, the low foe ×0.85 — only when
+// exactly one of them is on high ground.
+function highGroundAcc(ownTile, oppTile) {
+  if (ownTile.hg && !oppTile.hg) return 1.15;
+  if (!ownTile.hg && oppTile.hg) return 0.85;
+  return 1;
+}
+
+// Terrain Def multiplier for a tile (scales the BASE defense stat via computeAllStats,
+// so it reaches both melee protection and block).
+function defMultFor(tile) {
+  return (TERRAIN_FX[(tile || NORMAL_TILE).t] || {}).def || 1;
+}
+
+// Apply the DERIVED-stat terrain effects (accuracy, evasion) + high-ground accuracy edge.
+// (The Def multiplier is applied earlier, inside computeAllStats, on the base defense stat.)
+function applyTerrain(stats, ownTile, oppTile) {
+  ownTile = ownTile || NORMAL_TILE;
+  oppTile = oppTile || NORMAL_TILE;
+  const fx = TERRAIN_FX[ownTile.t] || {};
+  const hgAcc = highGroundAcc(ownTile, oppTile);
+  return {
+    ...stats,
+    accuracy: Math.round(stats.accuracy * (fx.acc || 1) * hgAcc),
+    evasion: Math.round(stats.evasion * (fx.eva || 1)),
+  };
+}
+
 // Resolve the full exchange: A1 -> D1 -> A2 -> D2, stopping when someone reaches 0 HP.
 // attacker/defender are character rows (with current `health`). `abilityName` optional for the attacker.
-// `defenderCanCounter` is decided by the caller from board positions (defender must reach attacker).
-// rng defaults to Math.random; pass a seeded fn for deterministic tests.
-function resolveExchange(attacker, defender, abilityName, defenderCanCounter, rng = Math.random) {
+// atkTile/defTile are { t, hg } for terrain effects. rng defaults to Math.random (pass seeded for tests).
+function resolveExchange(attacker, defender, abilityName, defenderCanCounter, atkTile = NORMAL_TILE, defTile = NORMAL_TILE, rng = Math.random) {
   const ability = findAbility(attacker, abilityName);
-  const atk = computeAllStats(attacker, ability);
-  const def = computeAllStats(defender, null);
+  const atk = applyTerrain(computeAllStats(attacker, ability, defMultFor(atkTile)), atkTile, defTile);
+  const def = applyTerrain(computeAllStats(defender, null, defMultFor(defTile)), defTile, atkTile);
+
+  const type = ability ? ability.type : "Damage";
+  const isMaiming = type === "Maiming";     // a landed attacker strike cancels the matching counter
+  const isObscuring = type === "Obscuring"; // once the attacker lands, all later counters get acc x0.5
 
   let atkHp = num(attacker.health);
   let defHp = num(defender.health);
+  let attackerLanded = false; // has any attacker strike connected? (drives obscuring)
   const events = [];
+  const landed = (r) => r.type === "hit" || r.type === "crit";
 
+  // returns whether the attacker's strike landed (used by Maiming to cancel the next counter)
   const doAtk = (label) => {
     const r = strike(atk, def, rng);
+    if (landed(r)) attackerLanded = true;
     defHp = Math.max(0, defHp - r.damage);
     events.push({ step: label, by: "attacker", attackerId: attacker.id, targetId: defender.id, ...r, defenderHp: defHp, attackerHp: atkHp });
-    return defHp > 0;
+    return { alive: defHp > 0, landed: landed(r) };
   };
   const doDef = (label) => {
-    const r = strike(def, atk, rng);
+    // Obscuring: the defender's counter accuracy is halved once the attacker has landed a hit.
+    const defStats = isObscuring && attackerLanded ? { ...def, accuracy: Math.round(def.accuracy * 0.5) } : def;
+    const r = strike(defStats, atk, rng);
     atkHp = Math.max(0, atkHp - r.damage);
     events.push({ step: label, by: "defender", attackerId: defender.id, targetId: attacker.id, ...r, defenderHp: defHp, attackerHp: atkHp });
     return atkHp > 0;
   };
 
   // A1
-  if (!doAtk("A1")) return finish();
-  // D1 (only if defender survived and can reach the attacker)
-  if (defenderCanCounter) { if (!doDef("D1")) return finish(); }
+  const a1 = doAtk("A1");
+  if (!a1.alive) return finish();
+  // D1 — skipped if Maiming and A1 connected
+  if (defenderCanCounter && !(isMaiming && a1.landed)) { if (!doDef("D1")) return finish(); }
   // A2
-  if (!doAtk("A2")) return finish();
-  // D2
-  if (defenderCanCounter) { doDef("D2"); }
+  const a2 = doAtk("A2");
+  if (!a2.alive) return finish();
+  // D2 — skipped if Maiming and A2 connected
+  if (defenderCanCounter && !(isMaiming && a2.landed)) { doDef("D2"); }
   return finish();
 
   function finish() {
-    return { events, attackerHp: atkHp, defenderHp: defHp };
+    // attackerHit lets the caller apply on-hit effects (e.g. Injuring) only when an attack connected.
+    return { events, attackerHp: atkHp, defenderHp: defHp, attackerHit: attackerLanded };
   }
 }
 
@@ -186,7 +281,11 @@ module.exports = {
   getAttackRange,
   manhattan,
   inRange,
+  stepAllowed,
+  reachable,
   computeAllStats,
+  applyTerrain,
+  TERRAIN_FX,
   strike,
   resolveExchange,
 };

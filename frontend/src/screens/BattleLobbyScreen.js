@@ -106,7 +106,7 @@ export default function BattleLobbyScreen({ navigation }) {
           )}
           {mode === "join" && (
             <View>
-              <TextInput style={styles.codeInput} placeholder="TOKEN" placeholderTextColor={theme.textDim} autoCapitalize="characters" maxLength={4} value={code} onChangeText={(t) => setCode(t.toUpperCase())} />
+              <TextInput style={styles.codeInput} placeholder="TOKEN" placeholderTextColor={theme.textDim} autoCapitalize="characters" autoCorrect={false} spellCheck={false} autoComplete="off" textContentType="none" keyboardType="visible-password" maxLength={4} value={code} onChangeText={(t) => setCode(t.toUpperCase())} />
               <TornButton style={styles.action} onPress={join}>
                 <Text style={styles.actionText}>Ride to Battle</Text>
               </TornButton>

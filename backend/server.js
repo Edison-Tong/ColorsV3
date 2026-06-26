@@ -227,10 +227,23 @@ function genCode() {
 function buildUnits(ownerId, characters) {
   const units = {};
   for (const c of characters) {
-    units[c.id] = { ...c, ownerId, maxHealth: c.health, health: c.health, alive: true };
+    units[c.id] = { ...c, ownerId, maxHealth: c.health, health: c.health, alive: true, statuses: [] };
   }
   return units;
 }
+
+// ── Status effects (active states a unit can carry during battle) ──
+const hasStatus = (u, type) => Array.isArray(u.statuses) && u.statuses.some((s) => s.type === type);
+const addStatus = (u, type, extra) => {
+  u.statuses = u.statuses || [];
+  if (!hasStatus(u, type)) u.statuses.push({ type, ...extra });
+};
+// Drop statuses that expire at the end of the current turn (e.g. Injured).
+const clearTurnEndStatuses = (b) => {
+  for (const u of Object.values(b.units)) {
+    if (Array.isArray(u.statuses)) u.statuses = u.statuses.filter((s) => s.clearOn !== "turnEnd");
+  }
+};
 
 // Initial placement: host along bottom (row 5), joiner along top (row 0). Centered in 8 cols.
 function placeTeam(ids, side) {
@@ -388,12 +401,21 @@ io.on("connection", (socket) => {
 
     const from = b.positions[charId];
     if (!to || to.r < 0 || to.r >= BOARD_ROWS || to.c < 0 || to.c >= BOARD_COLS) return cb && cb({ error: "Off board" });
-    const dist = combat.manhattan(from, to);
-    if (dist === 0 || dist > remaining) return cb && cb({ error: "Out of move range" });
-    if (occupant(room, to.r, to.c)) return cb && cb({ error: "Cell occupied" });
+
+    // Path-based reachability: respects terrain (high ground / stairs) and unit blocking.
+    const occupied = new Set();
+    for (const [id, p] of Object.entries(b.positions)) if (Number(id) !== Number(charId)) occupied.add(p.r + ":" + p.c);
+    const { cells, dist } = combat.reachable(
+      from, remaining,
+      (r, c) => board.tileAt(r, c),
+      (r, c) => occupied.has(r + ":" + c),
+      BOARD_ROWS, BOARD_COLS
+    );
+    const destKey = to.r + ":" + to.c;
+    if (!cells.has(destKey)) return cb && cb({ error: "Can't move there" });
 
     b.positions[charId] = { r: to.r, c: to.c };
-    b.moveRemaining[charId] = remaining - dist;
+    b.moveRemaining[charId] = remaining - dist.get(destKey);
     cb && cb({ ok: true });
     broadcast(room);
   });
@@ -423,10 +445,17 @@ io.on("connection", (socket) => {
     const dPos = b.positions[defenderId];
     if (!combat.inRange(aPos, dPos, range)) return cb && cb({ error: "Target out of range" });
 
-    // Defender may counter only if it can reach the attacker with its own weapon range.
-    const defenderCanCounter = combat.inRange(dPos, aPos, combat.getAttackRange(defender, null));
+    // Defender may counter only if it can reach the attacker AND isn't Injured this turn.
+    const defenderCanCounter = combat.inRange(dPos, aPos, combat.getAttackRange(defender, null)) && !hasStatus(defender, "injured");
 
-    const result = combat.resolveExchange(attacker, defender, abilityName, defenderCanCounter);
+    // Terrain effects: each combatant uses the tile it's standing on.
+    const result = combat.resolveExchange(
+      attacker, defender, abilityName, defenderCanCounter,
+      board.tileAt(aPos.r, aPos.c), board.tileAt(dPos.r, dPos.c)
+    );
+
+    // Injuring: a connecting attack disables the target's counters for the rest of this turn.
+    if (ability && ability.type === "Injuring" && result.attackerHit) addStatus(defender, "injured", { clearOn: "turnEnd" });
 
     attacker.health = result.attackerHp;
     defender.health = result.defenderHp;
@@ -486,6 +515,7 @@ io.on("connection", (socket) => {
     if (!room || !room.battle) return cb && cb({ error: "No battle" });
     const b = room.battle;
     if (b.turnUserId !== socket.data.userId) return cb && cb({ error: "Not your turn" });
+    clearTurnEndStatuses(b); // Injured etc. wear off when the turn that applied them ends
     b.turnUserId = b.turnUserId === room.hostId ? room.joinerId : room.hostId;
     b.moveRemaining = {};
     b.acted = {};
@@ -493,23 +523,67 @@ io.on("connection", (socket) => {
     broadcast(room);
   });
 
-  socket.on("leaveRoom", () => cleanup(socket));
-  socket.on("disconnect", () => cleanup(socket));
+  // Resume an in-progress battle after a brief disconnect (app backgrounded / network blip).
+  // Re-associates this (possibly brand-new) socket with the room and resends current state.
+  on("resume", ({ code, userId }, cb) => {
+    const room = rooms[code];
+    if (!room || !room.battle || room.battle.turnUserId == null) return cb && cb({ error: "No active battle" });
+    const me = Number(userId);
+    if (me !== room.hostId && me !== room.joinerId) return cb && cb({ error: "Not in this battle" });
+    socket.join(code);
+    socket.data.code = code;
+    socket.data.userId = me;
+    if (me === room.hostId) room.hostSocket = socket.id; else room.joinerSocket = socket.id;
+    if (room.graceTimers && room.graceTimers[me]) { clearTimeout(room.graceTimers[me]); delete room.graceTimers[me]; }
+    io.to(code).emit("opponentReconnected", { userId: me });
+    socket.emit("state", publicState(room)); // hand the returning client the current battle state
+    cb && cb({ ok: true });
+  });
+
+  socket.on("leaveRoom", () => forfeit(socket));      // explicit "Leave" — forfeit now
+  socket.on("disconnect", () => handleDisconnect(socket)); // dropped — keep alive for a grace period
 });
 
-function cleanup(socket) {
-  const code = socket.data.code;
-  if (!code || !rooms[code]) return;
-  const room = rooms[code];
+// Keep a battle alive this long after a disconnect so a player can reconnect (e.g. took a
+// phone call, switched apps). Only if they don't return in time does it count as a forfeit.
+const GRACE_MS = 300000; // 5 minutes
+
+function endRoom(room, loserId, code) {
+  if (room.graceTimers) { Object.values(room.graceTimers).forEach((t) => clearTimeout(t)); room.graceTimers = {}; }
   io.to(code).emit("opponentLeft", {});
   if (room.battle && !room.battle.over) {
-    // forfeit: the remaining player wins
-    const leaver = socket.data.userId;
     room.battle.over = true;
-    room.battle.winnerId = leaver === room.hostId ? room.joinerId : room.hostId;
+    room.battle.winnerId = loserId === room.hostId ? room.joinerId : room.hostId;
     broadcast(room);
   }
   delete rooms[code];
+}
+
+function forfeit(socket) {
+  const code = socket.data.code;
+  if (!code || !rooms[code]) return;
+  endRoom(rooms[code], socket.data.userId, code);
+}
+
+function handleDisconnect(socket) {
+  const code = socket.data.code;
+  if (!code || !rooms[code]) return;
+  const room = rooms[code];
+  const me = socket.data.userId;
+  // Ignore a stale socket's late disconnect if the player already reconnected on a newer one.
+  const current = me === room.hostId ? room.hostSocket : room.joinerSocket;
+  if (current && current !== socket.id) return;
+
+  const b = room.battle;
+  if (!b || b.turnUserId == null) { delete rooms[code]; return; } // still in the lobby — just drop it
+  if (b.over) return;
+
+  io.to(code).emit("opponentDisconnected", { userId: me });
+  room.graceTimers = room.graceTimers || {};
+  if (room.graceTimers[me]) clearTimeout(room.graceTimers[me]);
+  room.graceTimers[me] = setTimeout(() => {
+    if (rooms[code] && room.battle && !room.battle.over) endRoom(room, me, code);
+  }, GRACE_MS);
 }
 
 store

@@ -1,13 +1,41 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, Modal, Alert, Pressable, Animated, Easing, ScrollView, Dimensions } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, Modal, Alert, Pressable, Animated, Easing, ScrollView, Dimensions, AppState } from "react-native";
 import { getSocket } from "../api";
 import { theme, FONTS, WEAPON_GLYPH } from "../theme";
 import { Torn, TornButton } from "../components/Torn";
 import { TILES, tileFor } from "../data/board";
-import { computeAllStats, getMoveValue, getAttackRange, findAbility, manhattan, inRange, previewStrike } from "../logic/combat";
+import { computeAllStats, getMoveValue, getAttackRange, findAbility, manhattan, inRange, previewStrike, reachable, TERRAIN_FX } from "../logic/combat";
 
 const CELL = 46; // fixed tile size; the board scrolls when bigger than the screen
 const { width: SCREEN_W } = Dimensions.get("window");
+
+// Active-status labels (shown in the unit panel) and board icons.
+const STATUS_LABEL = { injured: "🩹 Injured — can't counter this turn" };
+const STATUS_ICON = { injured: "🩹" };
+// Every ability TYPE, with a short description and whether it's actually wired up yet
+// (done:false ones are shown but marked "soon" so the UI stays honest).
+const TYPE_INFO = {
+  Damage:       { label: "Damage",       desc: "Standard attack",                 done: true },
+  Maiming:      { label: "Maiming",      desc: "Cancels their counter on a hit",  done: true },
+  Obscuring:    { label: "Obscuring",    desc: "Halves their counter accuracy",   done: true },
+  Injuring:     { label: "Injuring",     desc: "Target can't counter this turn",  done: true },
+  Radial:       { label: "Radial",       desc: "Hits all adjacent enemies",       done: false },
+  Meteor:       { label: "Meteor",       desc: "Ranged; ⅓ splash to nearby tiles",done: false },
+  Piercing:     { label: "Piercing",     desc: "Ignores the target's protection", done: false },
+  Efficiency:   { label: "Efficiency",   desc: "×1.3 to a stat vs certain units", done: false },
+  Brave:        { label: "Brave",        desc: "Two strikes before they counter", done: false },
+  Absorption:   { label: "Absorption",   desc: "Heals you for damage dealt",      done: false },
+  Burning:      { label: "Burning",      desc: "Inflicts Burn (−12.5% HP/turn)",  done: false },
+  Poisoning:    { label: "Poisoning",    desc: "Inflicts Poison (−12.5% HP/turn)",done: false },
+  Freezing:     { label: "Freezing",     desc: "Inflicts Freeze (−12.5% HP/turn)",done: false },
+  Crushing:     { label: "Crushing",     desc: "Inflicts Crush (−12.5% HP/turn)", done: false },
+  Shocking:     { label: "Shocking",     desc: "Inflicts Shock (−12.5% HP/turn)", done: false },
+  Silencing:    { label: "Silencing",    desc: "Silences (no abilities)",         done: false },
+  Slowing:      { label: "Slowing",      desc: "Slows (no double-attack)",        done: false },
+  Blinding:     { label: "Blinding",     desc: "Blinds (accuracy halved)",        done: false },
+  Immobilizing: { label: "Immobilizing", desc: "Immobilizes (can't move)",        done: false },
+};
+const typeInfo = (t) => TYPE_INFO[t] || { label: t, desc: "", done: false };
 
 // Outcome → emoji + label, used everywhere so combat reads at a glance.
 const OUTCOME = {
@@ -26,6 +54,7 @@ export default function BattleScreen({ route, navigation }) {
   const [casting, setCasting] = useState(null);           // special object being aimed
   const [result, setResult] = useState(null);             // last attack, for the emoji overlay
   const [castResult, setCastResult] = useState(null);     // last special cast, for its overlay
+  const [oppAway, setOppAway] = useState(false);          // opponent temporarily disconnected
   const vScroll = useRef(null);
   const hScroll = useRef(null);
   const scrolledRef = useRef(false);
@@ -38,19 +67,39 @@ export default function BattleScreen({ route, navigation }) {
   const amHost = state.hostId === userId;
   const myTurn = state.turnUserId === userId && !state.over;
   const fromView = (p) => (amHost ? p : { r: rows - 1 - p.r, c: cols - 1 - p.c });
-  const cellAt = (r, c) => (terrain[r] && terrain[r][c]) || { t: "normal", hg: false };
+  const cellAt = (r, c) => (terrain[r] && terrain[r][c]) || { t: "normal", hg: false, stairs: false };
 
   useEffect(() => {
     const onState = (s) => setState(s);
     const onAttack = (res) => setResult(res);
     const onCast = (res) => setCastResult(res);
     const onLeft = () => Alert.alert("Opponent left", "The match has ended.");
+    const onConnect = () => socket.emit("resume", { code, userId }); // re-join after a reconnect
+    const onOppDisc = () => setOppAway(true);
+    const onOppRecon = () => setOppAway(false);
     socket.on("state", onState);
     socket.on("attackResult", onAttack);
     socket.on("specialResult", onCast);
     socket.on("opponentLeft", onLeft);
-    return () => { socket.off("state", onState); socket.off("attackResult", onAttack); socket.off("specialResult", onCast); socket.off("opponentLeft", onLeft); };
-  }, [socket]);
+    socket.on("connect", onConnect);
+    socket.on("opponentDisconnected", onOppDisc);
+    socket.on("opponentReconnected", onOppRecon);
+    return () => {
+      socket.off("state", onState); socket.off("attackResult", onAttack); socket.off("specialResult", onCast);
+      socket.off("opponentLeft", onLeft); socket.off("connect", onConnect);
+      socket.off("opponentDisconnected", onOppDisc); socket.off("opponentReconnected", onOppRecon);
+    };
+  }, [socket, code, userId]);
+
+  // Coming back to the foreground: make sure we're connected and re-sync the battle.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (s) => {
+      if (s !== "active") return;
+      if (!socket.connected) socket.connect();
+      else socket.emit("resume", { code, userId });
+    });
+    return () => sub.remove();
+  }, [socket, code, userId]);
 
   useEffect(() => { if (!result) return; const t = setTimeout(() => setResult(null), 4000); return () => clearTimeout(t); }, [result]);
   useEffect(() => { if (!castResult) return; const t = setTimeout(() => setCastResult(null), 3500); return () => clearTimeout(t); }, [castResult]);
@@ -68,16 +117,14 @@ export default function BattleScreen({ route, navigation }) {
 
   const moveCells = useMemo(() => {
     if (!selAlive || !selPos || !myTurn || casting || moveLeft <= 0) return new Set();
-    const occupied = new Set(Object.values(positions).map((p) => `${p.r}:${p.c}`));
-    const out = new Set();
-    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-      const key = `${r}:${c}`;
-      if (occupied.has(key)) continue;
-      const d = manhattan(selPos, { r, c });
-      if (d > 0 && d <= moveLeft) out.add(key);
-    }
-    return out;
-  }, [selAlive, selPos, myTurn, casting, moveLeft, positions, rows, cols]);
+    const occupied = new Set(Object.entries(positions).filter(([id]) => Number(id) !== Number(selectedId)).map(([, p]) => `${p.r}:${p.c}`));
+    return reachable(
+      selPos, moveLeft,
+      (r, c) => cellAt(r, c),
+      (r, c) => occupied.has(`${r}:${c}`),
+      rows, cols
+    ).cells;
+  }, [selAlive, selPos, myTurn, casting, moveLeft, positions, rows, cols, selectedId]);
 
   const maxRange = useMemo(() => {
     if (!selected) return 1;
@@ -159,6 +206,12 @@ export default function BattleScreen({ route, navigation }) {
         <Text style={styles.code}>#{code}</Text>
       </View>
 
+      {oppAway && !state.over && (
+        <View style={styles.awayBanner}>
+          <Text style={styles.awayText}>⏳ Opponent stepped away — waiting for them to return…</Text>
+        </View>
+      )}
+
       <Text style={styles.sideLabel}>⬆️ Opponent</Text>
       {/* Big board: scrolls vertically (outer) and horizontally (inner). */}
       <ScrollView ref={vScroll} style={styles.boardViewport} contentContainerStyle={{ alignItems: "center" }}
@@ -181,24 +234,26 @@ export default function BattleScreen({ route, navigation }) {
                   return (
                     <TouchableOpacity key={vc} activeOpacity={0.7} onPress={() => onCellPress(abs)}
                       style={[styles.cell, { width: cell, height: cell, backgroundColor: tile.color }, tc.hg && styles.cellHigh, isSelected && styles.cellSelected]}>
-                      {!u && (
-                        <>
-                          {tc.stairs && <Stairs dir={tc.sd} joinerMirror={!amHost} />}
-                          {!!tile.glyph && <Text style={styles.cornerGlyph}>{tile.glyph}</Text>}
-                        </>
-                      )}
-                      {tc.hg && <View style={styles.hgBadge}><Text style={styles.hgText}>HG</Text></View>}
+                      {/* terrain features */}
+                      {!u && tc.stairs && <Stairs dir={tc.sd} joinerMirror={!amHost} />}
+                      {/* movement / target highlights wash the whole tile */}
                       {isMove && <View style={[styles.overlay, styles.ovMove]} />}
+                      {isMove && <View style={styles.moveMark} pointerEvents="none"><View style={styles.moveDot} /></View>}
                       {isTarget && <View style={[styles.overlay, styles.ovTarget]} />}
                       {isCast && <View style={[styles.overlay, styles.ovCast]} />}
+                      {/* the unit: a small round piece so the tile shows around it */}
                       {u && (
-                        <View style={[styles.token, { backgroundColor: mine ? theme.mine : theme.enemy, opacity: u.alive ? 1 : 0.25 }]}>
+                        <View style={[styles.token, { backgroundColor: mine ? theme.mine : theme.enemy, opacity: u.alive ? 1 : 0.35 }]}>
                           <Text style={styles.tokenGlyph}>{u.alive ? (WEAPON_GLYPH[u.base_weapon] || "⚔️") : "💀"}</Text>
-                          {u.alive && <View style={styles.hpBar}><View style={[styles.hpFill, { width: `${Math.max(0, (u.health / u.maxHealth) * 100)}%` }]} /></View>}
-                          {isTarget && <Text style={styles.cornerPip}>⚔️</Text>}
-                          {isCast && casting && <Text style={styles.cornerPip}>✨</Text>}
                         </View>
                       )}
+                      {u && u.alive && <View style={styles.hpBar}><View style={[styles.hpFill, { width: `${Math.max(0, (u.health / u.maxHealth) * 100)}%` }]} /></View>}
+                      {u && u.alive && (u.statuses || []).some((s) => STATUS_ICON[s.type]) && (
+                        <Text style={styles.statusPip}>{(u.statuses || []).map((s) => STATUS_ICON[s.type]).filter(Boolean).join("")}</Text>
+                      )}
+                      {/* tile labels stay on top so you can always read the tile, even when occupied */}
+                      {!!tile.glyph && <Text style={styles.cornerGlyph}>{tile.glyph}</Text>}
+                      {tc.hg && <View style={styles.hgBadge}><Text style={styles.hgText}>HG</Text></View>}
                     </TouchableOpacity>
                   );
                 })}
@@ -221,6 +276,7 @@ export default function BattleScreen({ route, navigation }) {
       {selected
         ? <StatsPanel u={selected} moveLeft={moveLeft} maxRange={maxRange} acted={hasActed} mine={isMine} myTurn={myTurn}
             tile={selPos ? tileFor(cellAt(selPos.r, selPos.c).t) : null}
+            tileKey={selPos ? cellAt(selPos.r, selPos.c).t : null}
             high={selPos ? cellAt(selPos.r, selPos.c).hg : false}
             stairs={selPos ? cellAt(selPos.r, selPos.c).stairs : false}
             specials={mySpecials} casting={casting} onCast={(name) => setCasting(findAbility(selected, name))} />
@@ -237,7 +293,10 @@ export default function BattleScreen({ route, navigation }) {
         <View style={styles.backdrop}>
           <Torn style={styles.sheet}>
             {attackTarget && selected && (
-              <AttackChooser attacker={selected} target={attackTarget} dist={manhattan(selPos, positions[attackTarget.id] || selPos)} onPick={doAttack} onCancel={() => setAttackTarget(null)} />
+              <AttackChooser attacker={selected} target={attackTarget} dist={manhattan(selPos, positions[attackTarget.id] || selPos)}
+                atkTile={selPos ? cellAt(selPos.r, selPos.c) : null}
+                defTile={positions[attackTarget.id] ? cellAt(positions[attackTarget.id].r, positions[attackTarget.id].c) : null}
+                onPick={doAttack} onCancel={() => setAttackTarget(null)} />
             )}
           </Torn>
         </View>
@@ -286,7 +345,8 @@ function GameOverOverlay({ win, onExit }) {
 }
 
 // ─────────────────────────── Stats panel ───────────────────────────
-function StatsPanel({ u, moveLeft, maxRange, acted, mine, myTurn, specials, casting, onCast, tile, high, stairs }) {
+function StatsPanel({ u, moveLeft, maxRange, acted, mine, myTurn, specials, casting, onCast, tile, tileKey, high, stairs }) {
+  const terrFx = fxList(TERRAIN_FX[tileKey]);
   const s = computeAllStats(u, null);
   const prot = u.type === "mage" ? s.protection.magic : s.protection.melee;
   return (
@@ -320,6 +380,30 @@ function StatsPanel({ u, moveLeft, maxRange, acted, mine, myTurn, specials, cast
             {"   "}🎯 Range {maxRange}{"   "}{acted ? "⚔️ acted" : "⚔️ can act"}
           </Text>
         )}
+
+        {(terrFx || high) && (
+          <Text style={styles.terrLine}>
+            🗺 {tile?.name}{terrFx ? "  " + terrFx : ""}{high ? "   ⬆ High Ground 🎯×1.15 vs low" : ""}
+          </Text>
+        )}
+
+        {(u.statuses || []).length > 0 && (
+          <Text style={styles.statusLine}>{(u.statuses || []).map((s) => STATUS_LABEL[s.type] || s.type).join("   ·   ")}</Text>
+        )}
+
+        {/* Attacks at this unit's disposal */}
+        <View style={styles.attacksBox}>
+          <Text style={styles.attacksTitle}>⚔️ Attacks</Text>
+          {[{ name: `Basic ${cap(u.base_weapon)}`, type: "Damage" }, ...(u.abilities || []).map((nm) => ({ name: nm, type: (findAbility(u, nm) || {}).type || "Damage" }))].map((atk, i) => {
+            const info = typeInfo(atk.type);
+            return (
+              <Text key={i} style={styles.attackItem}>
+                • {atk.name} — <Text style={{ color: info.done ? theme.good : theme.textDim }}>{info.label}{info.done ? "" : " (soon)"}</Text>
+                {info.desc ? <Text style={{ color: theme.textDim }}>  {info.desc}</Text> : null}
+              </Text>
+            );
+          })}
+        </View>
 
         {/* Mage specials */}
         {mine && specials.length > 0 && (
@@ -355,25 +439,29 @@ const Stat = ({ icon, label, v, small }) => (
 );
 
 // ─────────────────────────── Attack chooser ───────────────────────────
-function AttackChooser({ attacker, target, dist, onPick, onCancel }) {
+function AttackChooser({ attacker, target, dist, onPick, onCancel, atkTile, defTile }) {
   const options = [
     { name: null, label: `Basic ${cap(attacker.base_weapon)}`, ability: null, icon: WEAPON_GLYPH[attacker.base_weapon] || "⚔️" },
     ...(attacker.abilities || []).map((n) => ({ name: n, label: n, ability: findAbility(attacker, n), icon: "🔥" })),
   ];
+  const terr = terrainNote(atkTile, defTile);
   return (
     <>
       <Text style={styles.sheetTitle}>{WEAPON_GLYPH[attacker.base_weapon]} {attacker.name}  →  {target.name}</Text>
       <Text style={styles.sheetSub}>📏 Distance {dist}{"   "}❤️ {target.health}/{target.maxHealth}</Text>
+      {!!terr && <Text style={styles.terrNote}>{terr}</Text>}
       {options.map((opt, i) => {
         const range = getAttackRange(attacker, opt.ability);
         const reach = dist <= range;
-        const p = previewStrike(attacker, target, opt.ability);
+        const p = previewStrike(attacker, target, opt.ability, atkTile, defTile);
         return (
           <TouchableOpacity key={i} disabled={!reach} onPress={() => onPick(opt.name)} style={[styles.optRow, !reach && styles.optDisabled]}>
             <Text style={styles.optIcon}>{opt.icon}</Text>
             <View style={{ flex: 1 }}>
               <Text style={styles.optName}>{opt.label}{!reach ? `  (needs range ${range})` : ""}</Text>
               <Text style={styles.optMeta}>💥 ~{p.damage}   🎯 {p.hitPct}%   🛡️ {p.blockPct}%   ✨ {p.critPct}%   📏 {range}</Text>
+              {(() => { const info = typeInfo(opt.ability ? opt.ability.type : "Damage");
+                return <Text style={[styles.optEffect, !info.done && styles.optEffectSoon]}>{info.label}{info.desc ? " · " + info.desc : ""}{!info.done ? "  (soon)" : ""}</Text>; })()}
             </View>
             {reach && <Text style={styles.optGo}>›</Text>}
           </TouchableOpacity>
@@ -458,12 +546,37 @@ function occupantAt(positions, abs) {
 }
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
+// Compact terrain-effect string, e.g. "🛡×1.1 🎯×1.1 💨×1.15".
+function fxList(fx) {
+  if (!fx) return "";
+  const p = [];
+  if (fx.def && fx.def !== 1) p.push(`🛡×${fx.def}`);
+  if (fx.acc && fx.acc !== 1) p.push(`🎯×${fx.acc}`);
+  if (fx.eva && fx.eva !== 1) p.push(`💨×${fx.eva}`);
+  return p.join(" ");
+}
+
+// Terrain context for the attack chooser: attacker's tile, foe's tile, and high-ground edge.
+function terrainNote(atkTile, defTile) {
+  if (!atkTile || !defTile) return "";
+  const lines = [];
+  const a = fxList(TERRAIN_FX[atkTile.t]);
+  const d = fxList(TERRAIN_FX[defTile.t]);
+  if (a) lines.push(`You · ${cap(atkTile.t)}  ${a}`);
+  if (d) lines.push(`Foe · ${cap(defTile.t)}  ${d}`);
+  if (atkTile.hg && !defTile.hg) lines.push("⬆ High ground — your 🎯 ×1.15");
+  else if (!atkTile.hg && defTile.hg) lines.push("⬇ Low ground — your 🎯 ×0.85");
+  return lines.join("\n");
+}
+
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: theme.bg, paddingTop: 44 },
   topBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 14, paddingBottom: 6 },
   leave: { color: theme.textDim, fontSize: 16 },
   turn: { fontFamily: FONTS.heading, fontSize: 15, letterSpacing: 1 },
   code: { fontFamily: FONTS.headingReg, color: theme.textDim },
+  awayBanner: { backgroundColor: "#3a2a14", marginHorizontal: 10, marginTop: 4, borderRadius: 8, padding: 8, borderWidth: 1, borderColor: theme.warn },
+  awayText: { color: theme.warn, fontSize: 12, textAlign: "center", fontWeight: "600" },
   sideLabel: { fontFamily: FONTS.headingReg, color: theme.textDim, fontSize: 12, textAlign: "center", marginVertical: 2, letterSpacing: 1 },
   boardViewport: { flex: 1, alignSelf: "stretch" },
   board: { borderWidth: 3, borderColor: theme.border },
@@ -483,14 +596,20 @@ const styles = StyleSheet.create({
   hgBadge: { position: "absolute", top: 1, left: 1, backgroundColor: "rgba(18,14,7,0.85)", paddingHorizontal: 2, borderRadius: 2 },
   hgText: { color: "#ffe08a", fontSize: 7, fontWeight: "800", letterSpacing: 0.3 },
   overlay: { ...StyleSheet.absoluteFillObject },
-  ovMove: { backgroundColor: "rgba(120,180,90,0.5)" },
+  ovMove: { backgroundColor: "rgba(70,160,255,0.32)", borderWidth: 1.5, borderColor: "rgba(150,220,255,0.85)" },
   ovTarget: { backgroundColor: "rgba(200,70,60,0.55)" },
   ovCast: { backgroundColor: "rgba(120,200,130,0.5)" },
-  token: { width: "84%", height: "84%", borderRadius: 4, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#00000055" },
-  tokenGlyph: { fontSize: 18 },
-  hpBar: { position: "absolute", bottom: 2, left: 3, right: 3, height: 3, backgroundColor: "#00000088", borderRadius: 2 },
+  moveMark: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
+  moveDot: { width: 15, height: 15, borderRadius: 8, backgroundColor: "#aee3ff", borderWidth: 2, borderColor: "#0b3a5c" },
+  token: {
+    width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center",
+    borderWidth: 3, borderColor: "#ffffff",                 // bold white ring so it pops on any tile
+    shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.55, shadowRadius: 2.5, // iOS lift
+    elevation: 6,                                            // Android lift
+  },
+  tokenGlyph: { fontSize: 16 },
+  hpBar: { position: "absolute", bottom: 2, left: 8, right: 8, height: 3, backgroundColor: "#00000088", borderRadius: 2 },
   hpFill: { height: 3, backgroundColor: theme.hp, borderRadius: 2 },
-  cornerPip: { position: "absolute", top: -2, right: -2, fontSize: 10 },
   infoBar: { backgroundColor: theme.card, marginHorizontal: 10, marginTop: 8, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: theme.border },
   infoHint: { color: theme.textDim, fontSize: 12, marginTop: 6 },
 
@@ -512,6 +631,12 @@ const styles = StyleSheet.create({
   statLbl: { color: theme.textDim, fontSize: 11 },
   statVal: { color: theme.text, fontSize: 17, fontWeight: "800", marginTop: 1 },
   moveLine: { color: theme.text, fontSize: 13, marginTop: 4, fontWeight: "600" },
+  terrLine: { color: theme.warn, fontSize: 12, marginTop: 5, fontWeight: "600" },
+  statusLine: { color: theme.danger, fontSize: 12, marginTop: 5, fontWeight: "700" },
+  attacksBox: { marginTop: 8, borderTopWidth: 1, borderTopColor: theme.border, paddingTop: 8 },
+  attacksTitle: { color: theme.warn, fontWeight: "700", fontSize: 13, marginBottom: 4 },
+  attackItem: { color: theme.text, fontSize: 12, marginBottom: 3 },
+  statusPip: { position: "absolute", bottom: -2, right: 0, fontSize: 11 },
 
   specialsBox: { marginTop: 10, borderTopWidth: 1, borderTopColor: theme.border, paddingTop: 8 },
   specialsTitle: { color: theme.warn, fontWeight: "700", fontSize: 13, marginBottom: 6 },
@@ -528,12 +653,15 @@ const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "flex-end" },
   sheet: { backgroundColor: theme.card, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, borderWidth: 1, borderColor: theme.border },
   sheetTitle: { fontFamily: FONTS.heading, color: theme.text, fontSize: 20, letterSpacing: 0.5 },
-  sheetSub: { color: theme.textDim, marginBottom: 14, marginTop: 4, fontSize: 14 },
+  sheetSub: { color: theme.textDim, marginBottom: 8, marginTop: 4, fontSize: 14 },
+  terrNote: { color: theme.warn, fontSize: 12, marginBottom: 12, fontWeight: "600", lineHeight: 17 },
   optRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: theme.cardAlt, borderRadius: 12, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: theme.border },
   optDisabled: { opacity: 0.4 },
   optIcon: { fontSize: 24 },
   optName: { color: theme.text, fontWeight: "700", fontSize: 16 },
   optMeta: { color: theme.warn, fontSize: 13, marginTop: 4 },
+  optEffect: { color: theme.good, fontSize: 12, marginTop: 3, fontStyle: "italic" },
+  optEffectSoon: { color: theme.textDim },
   optGo: { color: theme.textDim, fontSize: 24 },
   sheetNote: { color: theme.textDim, fontSize: 12, marginVertical: 8, fontStyle: "italic" },
   cancelBtn: { padding: 14, alignItems: "center" },
