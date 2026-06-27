@@ -233,17 +233,7 @@ function buildUnits(ownerId, characters) {
 }
 
 // ── Status effects (active states a unit can carry during battle) ──
-const hasStatus = (u, type) => Array.isArray(u.statuses) && u.statuses.some((s) => s.type === type);
-const addStatus = (u, type, extra) => {
-  u.statuses = u.statuses || [];
-  if (!hasStatus(u, type)) u.statuses.push({ type, ...extra });
-};
-// Drop statuses that expire at the end of the current turn (e.g. Injured).
-const clearTurnEndStatuses = (b) => {
-  for (const u of Object.values(b.units)) {
-    if (Array.isArray(u.statuses)) u.statuses = u.statuses.filter((s) => s.clearOn !== "turnEnd");
-  }
-};
+const { hasStatus, addStatus, ON_HIT_STATUS, tickDots, decrementStatuses, clearTurnEndStatuses } = require("./status");
 
 // Initial placement: host along bottom (row 5), joiner along top (row 0). Centered in 8 cols.
 function placeTeam(ids, side) {
@@ -393,6 +383,7 @@ io.on("connection", (socket) => {
 
     const unit = b.units[charId];
     if (!unit || unit.ownerId !== me || !unit.alive) return cb && cb({ error: "Invalid unit" });
+    if (hasStatus(unit, "immobilized")) return cb && cb({ error: "Immobilized — can't move this turn" });
 
     // Movement is a per-turn budget: a unit may move multiple times (and move before
     // or after attacking) as long as it has movement points left. Attacking does not
@@ -439,6 +430,8 @@ io.on("connection", (socket) => {
     if (abilityName && !attacker.abilities.includes(abilityName) && !(attacker.specials || []).includes(abilityName)) {
       return cb && cb({ error: "Unknown ability" });
     }
+    // Silenced units can still make a basic attack, but not use a named ability.
+    if (abilityName && hasStatus(attacker, "silenced")) return cb && cb({ error: "Silenced — can't use abilities this turn" });
     const ability = combat.findAbility(attacker, abilityName);
     const range = combat.getAttackRange(attacker, ability);
     const aPos = b.positions[attackerId];
@@ -461,6 +454,13 @@ io.on("connection", (socket) => {
     defender.health = result.defenderHp;
     if (attacker.health <= 0) { attacker.alive = false; delete b.positions[attackerId]; }
     if (defender.health <= 0) { defender.alive = false; delete b.positions[defenderId]; }
+
+    // On-hit status types (Burning/Poisoning/Freezing/Crushing/Shocking, Silencing/Slowing/
+    // Blinding/Immobilizing) land a lingering status on a struck defender that survived the hit.
+    if (ability && result.attackerHit && defender.alive) {
+      const eff = ON_HIT_STATUS[ability.type];
+      if (eff) addStatus(defender, eff.status, { turnsLeft: eff.turns, dot: !!eff.dot });
+    }
     b.acted[attackerId] = true; // one attack per unit per turn; movement budget is unaffected
 
     checkWin(room);
@@ -488,6 +488,7 @@ io.on("connection", (socket) => {
     const caster = b.units[casterId];
     if (!caster || caster.ownerId !== me || !caster.alive) return cb && cb({ error: "Invalid caster" });
     if (b.acted[casterId]) return cb && cb({ error: "Unit already acted" });
+    if (hasStatus(caster, "silenced")) return cb && cb({ error: "Silenced — can't cast this turn" });
     if (!(caster.specials || []).includes(specialName)) return cb && cb({ error: "Unknown special" });
 
     const special = combat.findAbility(caster, specialName);
@@ -515,10 +516,17 @@ io.on("connection", (socket) => {
     if (!room || !room.battle) return cb && cb({ error: "No battle" });
     const b = room.battle;
     if (b.turnUserId !== socket.data.userId) return cb && cb({ error: "Not your turn" });
+    decrementStatuses(b);    // debuffs on the ending player's units count down a turn / expire
     clearTurnEndStatuses(b); // Injured etc. wear off when the turn that applied them ends
     b.turnUserId = b.turnUserId === room.hostId ? room.joinerId : room.hostId;
     b.moveRemaining = {};
     b.acted = {};
+    // DoTs on the NEW current player's units bite at the start of their turn.
+    const ticks = tickDots(b);
+    if (ticks.length) {
+      checkWin(room);
+      io.to(room.code).emit("statusTick", { ticks, over: b.over, winnerId: b.winnerId });
+    }
     cb && cb({ ok: true });
     broadcast(room);
   });

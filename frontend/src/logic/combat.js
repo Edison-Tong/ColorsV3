@@ -180,10 +180,15 @@ export function applyTerrain(stats, ownTile, oppTile) {
 export function previewStrike(attacker, defender, ability, atkTile, defTile) {
   const a = applyTerrain(computeAllStats(attacker, ability, defMultFor(atkTile)), atkTile, defTile);
   const d = applyTerrain(computeAllStats(defender, null, defMultFor(defTile)), defTile, atkTile);
-  const prot = a.isMage ? d.protection.magic : d.protection.melee;
+  // Piercing ignores the target's protection.
+  const piercing = ability && ability.type === "Piercing";
+  const prot = piercing ? 0 : a.isMage ? d.protection.magic : d.protection.melee;
   const damage = Math.max(0, Math.round(a.power - prot));
-  const hitPct = Math.max(0, Math.min(100, Math.round(a.hitBase + (a.accuracy - d.evasion))));
-  const blockPct = Math.max(0, Math.floor(d.block - a.accuracy));
+  // Blinding halves the attacker's accuracy while afflicted.
+  const blinded = Array.isArray(attacker.statuses) && attacker.statuses.some((s) => s.type === "blinded");
+  const acc = blinded ? Math.round(a.accuracy * 0.5) : a.accuracy;
+  const hitPct = Math.max(0, Math.min(100, Math.round(a.hitBase + (acc - d.evasion))));
+  const blockPct = Math.max(0, Math.floor(d.block - acc));
   const critPct = Math.max(0, Math.round(a.critical - d.luck));
   return { damage, hitPct, blockPct, critPct };
 }

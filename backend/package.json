@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node test/combat.test.js",
+    "test": "node test/combat.test.js && node test/status.test.js",
     "test:e2e": "node test/integration.js",
     "db:view": "node db-view.js",
     "seed": "node seed.js"

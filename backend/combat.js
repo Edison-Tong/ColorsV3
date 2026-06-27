@@ -6,6 +6,9 @@ const { weaponsData } = require("./weaponsData");
 
 const num = (v) => Number(v) || 0;
 
+// Is a given lingering status currently active on a unit?
+const statusActive = (u, type) => Array.isArray(u && u.statuses) && u.statuses.some((s) => s.type === type);
+
 function getWeaponStats(character) {
   const key = String(character.base_weapon || "").toLowerCase();
   return (weaponsData.weapons[key] && weaponsData.weapons[key].stats) || {};
@@ -225,24 +228,40 @@ function applyTerrain(stats, ownTile, oppTile) {
 // atkTile/defTile are { t, hg } for terrain effects. rng defaults to Math.random (pass seeded for tests).
 function resolveExchange(attacker, defender, abilityName, defenderCanCounter, atkTile = NORMAL_TILE, defTile = NORMAL_TILE, rng = Math.random) {
   const ability = findAbility(attacker, abilityName);
-  const atk = applyTerrain(computeAllStats(attacker, ability, defMultFor(atkTile)), atkTile, defTile);
-  const def = applyTerrain(computeAllStats(defender, null, defMultFor(defTile)), defTile, atkTile);
+  let atk = applyTerrain(computeAllStats(attacker, ability, defMultFor(atkTile)), atkTile, defTile);
+  let def = applyTerrain(computeAllStats(defender, null, defMultFor(defTile)), defTile, atkTile);
+
+  // Blinding halves an afflicted unit's accuracy on its own strikes (attacker or defender).
+  if (statusActive(attacker, "blinded")) atk = { ...atk, accuracy: Math.round(atk.accuracy * 0.5) };
+  if (statusActive(defender, "blinded")) def = { ...def, accuracy: Math.round(def.accuracy * 0.5) };
+  // Slowing removes an afflicted unit's second strike (its A2 / D2).
+  const attackerSlowed = statusActive(attacker, "slowed");
+  const defenderSlowed = statusActive(defender, "slowed");
 
   const type = ability ? ability.type : "Damage";
-  const isMaiming = type === "Maiming";     // a landed attacker strike cancels the matching counter
-  const isObscuring = type === "Obscuring"; // once the attacker lands, all later counters get acc x0.5
+  const isMaiming = type === "Maiming";       // a landed attacker strike cancels the matching counter
+  const isObscuring = type === "Obscuring";   // once the attacker lands, all later counters get acc x0.5
+  const isPiercing = type === "Piercing";     // attacker's strikes ignore the target's protection
+  const isBrave = type === "Brave";           // attacker lands both strikes before the defender counters
+  const isAbsorption = type === "Absorption"; // attacker heals 50% of the damage it deals
+
+  // Piercing: the attacker strikes against a copy of the defender with protection zeroed out.
+  const defForAtk = isPiercing ? { ...def, protection: { melee: 0, magic: 0 } } : def;
 
   let atkHp = num(attacker.health);
   let defHp = num(defender.health);
+  const maxAtkHp = num(attacker.maxHealth) || atkHp; // heal cap for Absorption
   let attackerLanded = false; // has any attacker strike connected? (drives obscuring)
   const events = [];
   const landed = (r) => r.type === "hit" || r.type === "crit";
 
   // returns whether the attacker's strike landed (used by Maiming to cancel the next counter)
   const doAtk = (label) => {
-    const r = strike(atk, def, rng);
+    const r = strike(atk, defForAtk, rng);
     if (landed(r)) attackerLanded = true;
     defHp = Math.max(0, defHp - r.damage);
+    // Absorption: attacker heals half the damage dealt (floored per strike), capped at max HP.
+    if (isAbsorption && r.damage > 0) atkHp = Math.min(maxAtkHp, atkHp + Math.floor(r.damage * 0.5));
     events.push({ step: label, by: "attacker", attackerId: attacker.id, targetId: defender.id, ...r, defenderHp: defHp, attackerHp: atkHp });
     return { alive: defHp > 0, landed: landed(r) };
   };
@@ -255,16 +274,31 @@ function resolveExchange(attacker, defender, abilityName, defenderCanCounter, at
     return atkHp > 0;
   };
 
+  if (isBrave) {
+    // Brave: A1 -> A2 (consecutive), then the defender's counters D1 -> D2.
+    if (!doAtk("A1").alive) return finish();
+    if (!attackerSlowed && !doAtk("A2").alive) return finish(); // slowed attacker forfeits A2
+    if (defenderCanCounter) {
+      if (!doDef("D1")) return finish();
+      if (!defenderSlowed) doDef("D2"); // slowed defender forfeits its second counter
+    }
+    return finish();
+  }
+
   // A1
   const a1 = doAtk("A1");
   if (!a1.alive) return finish();
   // D1 — skipped if Maiming and A1 connected
   if (defenderCanCounter && !(isMaiming && a1.landed)) { if (!doDef("D1")) return finish(); }
-  // A2
-  const a2 = doAtk("A2");
-  if (!a2.alive) return finish();
-  // D2 — skipped if Maiming and A2 connected
-  if (defenderCanCounter && !(isMaiming && a2.landed)) { doDef("D2"); }
+  // A2 — a slowed attacker forfeits ONLY its own second strike; the defender still gets its second counter.
+  let a2Landed = false;
+  if (!attackerSlowed) {
+    const a2 = doAtk("A2");
+    if (!a2.alive) return finish();
+    a2Landed = a2.landed;
+  }
+  // D2 — skipped if the defender is slowed, or Maiming cancelled it (only possible when A2 actually landed).
+  if (defenderCanCounter && !defenderSlowed && !(isMaiming && a2Landed)) { doDef("D2"); }
   return finish();
 
   function finish() {

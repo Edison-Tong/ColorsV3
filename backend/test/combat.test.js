@@ -109,4 +109,65 @@ const normalLands = counterLandings("Sword Dance", 2000); // Damage type
 const obscLands = counterLandings("Foul Play", 2000);     // Obscuring type
 assert.ok(obscLands < normalLands, `obscuring should reduce landed counters (normal ${normalLands} vs obscuring ${obscLands})`);
 
+// 14. Piercing: attacker ignores the target's protection (full power as damage).
+//     Armor Cleaver (axe, Piercing) vs a high-defense target -> A1 deals full power; a normal
+//     axe attack vs the same target deals power - protection. (mid roll: hits, no block/crit —
+//     piercing zeroes protection but NOT block, so a clean hit isolates the protection effect.)
+const mid = () => 0.5;
+const pierceTgt = mk({ id: 2, base_weapon: "lance", abilities: ["Impale", "Pierce"], health: 1000, defense: 12, resistance: 12, luck: 0 });
+const piercer = mk({ id: 1, base_weapon: "axe", abilities: ["Armor Cleaver", "Tomahawk"], health: 1000, strength: 8, luck: 0 });
+const pierceStats = combat.computeAllStats(piercer, combat.findAbility(piercer, "Armor Cleaver"));
+const rPierce = combat.resolveExchange(piercer, pierceTgt, "Armor Cleaver", false, n, n, mid);
+assert.strictEqual(rPierce.events[0].damage, pierceStats.power, `piercing A1 should deal full power (${pierceStats.power}), got ${rPierce.events[0].damage}`);
+const rNormalP = combat.resolveExchange(piercer, pierceTgt, "Tomahawk", false, n, n, mid);
+assert.ok(rNormalP.events[0].damage < pierceStats.power, "non-piercing attack is reduced by protection");
+
+// 15. Brave: both attacker strikes land before the defender counters (A1,A2,D1,D2).
+const braveA = mk({ id: 1, base_weapon: "dagger", abilities: ["Blitz", "Puncture"], health: 1000, strength: 8, defense: 0, resistance: 0 });
+const braveD = mk({ id: 2, base_weapon: "sword", abilities: ["Sword Dance", "Evasion"], health: 1000, strength: 8, defense: 0, resistance: 0 });
+const rBrave = combat.resolveExchange(braveA, braveD, "Blitz", true, n, n, alwaysLow);
+assert.deepStrictEqual(rBrave.events.map((e) => e.step), ["A1", "A2", "D1", "D2"], "Brave front-loads both attacker strikes");
+assert.deepStrictEqual(rBrave.events.map((e) => e.by), ["attacker", "attacker", "defender", "defender"], "Brave order: attacker, attacker, defender, defender");
+
+// 16. Absorption: attacker heals 50% (floored) of damage dealt, capped at maxHealth.
+const leecher = mk({ id: 1, base_weapon: "grass", type: "mage", abilities: ["Leech Life"], magick: 10, health: 100, maxHealth: 100 });
+leecher.health = 50; // hurt, so heal isn't capped
+const leechTgt = mk({ id: 2, base_weapon: "sword", abilities: ["Sword Dance", "Evasion"], health: 1000, defense: 0, resistance: 0, luck: 0, speed: 0, skill: 0, knowledge: 0 });
+const rLeech = combat.resolveExchange(leecher, leechTgt, "Leech Life", false, n, n, alwaysLow);
+const dealt = rLeech.events.filter((e) => e.by === "attacker").reduce((s, e) => s + e.damage, 0);
+const expectedHeal = rLeech.events.filter((e) => e.by === "attacker").reduce((s, e) => s + Math.floor(e.damage * 0.5), 0);
+assert.strictEqual(rLeech.attackerHp, 50 + expectedHeal, `absorption heal: expected ${50 + expectedHeal}, got ${rLeech.attackerHp}`);
+assert.ok(dealt > 0 && expectedHeal > 0, "leech test should actually deal damage");
+// Heal cap: a full-HP leecher never exceeds maxHealth.
+const fullLeech = mk({ id: 1, base_weapon: "dark", type: "mage", abilities: ["Leech Life"], magick: 10, health: 100, maxHealth: 100 });
+const rCap = combat.resolveExchange(fullLeech, leechTgt, "Leech Life", false, n, n, alwaysLow);
+assert.strictEqual(rCap.attackerHp, 100, "absorption never heals past maxHealth");
+
+// 17. Slowing: a slowed attacker forfeits its second strike (A2); a slowed defender forfeits D2.
+const slowAtk = mk({ id: 1, base_weapon: "sword", abilities: ["Sword Dance", "Evasion"], health: 1000, strength: 8, defense: 0, resistance: 0, statuses: [{ type: "slowed", turnsLeft: 1 }] });
+const slowFoe = mk({ id: 2, base_weapon: "sword", abilities: ["Sword Dance", "Evasion"], health: 1000, strength: 8, defense: 0, resistance: 0 });
+const rSlowA = combat.resolveExchange(slowAtk, slowFoe, null, true, n, n, alwaysLow);
+assert.deepStrictEqual(rSlowA.events.map((e) => e.step), ["A1", "D1", "D2"], "slowed attacker forfeits A2 only — the (un-slowed) defender still gets both counters");
+const rSlowD = combat.resolveExchange(slowFoe, slowAtk, null, true, n, n, alwaysLow); // now the slowed unit defends
+assert.deepStrictEqual(rSlowD.events.map((e) => e.step), ["A1", "D1", "A2"], "slowed defender forfeits its D2 counter only");
+// Both slowed: each forfeits its second strike -> A1, D1.
+const slowBoth = mk({ id: 3, base_weapon: "sword", abilities: ["Sword Dance", "Evasion"], health: 1000, strength: 8, defense: 0, resistance: 0, statuses: [{ type: "slowed", turnsLeft: 1 }] });
+const rBoth = combat.resolveExchange(slowAtk, slowBoth, null, true, n, n, alwaysLow);
+assert.deepStrictEqual(rBoth.events.map((e) => e.step), ["A1", "D1"], "both slowed -> one strike each");
+
+// 18. Blinding: a blinded unit's accuracy is halved, so it lands fewer attacker hits over many trials.
+function atkLandings(blinded, trials) {
+  let landed = 0;
+  for (let i = 0; i < trials; i++) {
+    const A = mk({ id: 1, base_weapon: "sword", abilities: ["Sword Dance", "Evasion"], health: 1000, strength: 8, statuses: blinded ? [{ type: "blinded", turnsLeft: 1 }] : [] });
+    const D = mk({ id: 2, base_weapon: "sword", abilities: ["Sword Dance", "Evasion"], health: 1000, strength: 8, speed: 10, skill: 12, knowledge: 12, luck: 8 });
+    const r = combat.resolveExchange(A, D, null, false, n, n, mulberry32(i + 1));
+    for (const e of r.events) if (e.by === "attacker" && (e.type === "hit" || e.type === "crit")) landed++;
+  }
+  return landed;
+}
+const sightedLands = atkLandings(false, 2000);
+const blindLands = atkLandings(true, 2000);
+assert.ok(blindLands < sightedLands, `blinding should reduce landed hits (sighted ${sightedLands} vs blind ${blindLands})`);
+
 console.log("All combat sanity checks passed ✓");
