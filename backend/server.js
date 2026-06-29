@@ -438,6 +438,43 @@ io.on("connection", (socket) => {
     const dPos = b.positions[defenderId];
     if (!combat.inRange(aPos, dPos, range)) return cb && cb({ error: "Target out of range" });
 
+    // ── Multi-target attacks (Radial / Meteor): one strike per enemy, NO counters. ──
+    if (ability && (ability.type === "Radial" || ability.type === "Meteor")) {
+      const enemies = Object.values(b.units).filter((u) => u.alive && u.ownerId !== me && b.positions[u.id]);
+      let targets;
+      if (ability.type === "Meteor") {
+        // Primary takes a full hit; enemies adjacent to the primary take 1/3 splash.
+        targets = [{ unit: defender, tile: board.tileAt(dPos.r, dPos.c), dmgMult: 1 }];
+        for (const u of enemies) {
+          if (u.id === defenderId) continue;
+          const p = b.positions[u.id];
+          if (combat.manhattan(dPos, p) === 1) targets.push({ unit: u, tile: board.tileAt(p.r, p.c), dmgMult: 1 / 3 });
+        }
+      } else {
+        // Radial: the primary plus the nearest other in-range enemies, up to the ability's cap.
+        const maxN = combat.RADIAL_TARGETS[abilityName] ?? 3;
+        const others = enemies
+          .filter((u) => u.id !== defenderId && combat.inRange(aPos, b.positions[u.id], range))
+          .sort((a, c) => combat.manhattan(aPos, b.positions[a.id]) - combat.manhattan(aPos, b.positions[c.id]));
+        const chosen = [defender, ...others].slice(0, maxN === Infinity ? undefined : maxN);
+        targets = chosen.map((u) => ({ unit: u, tile: board.tileAt(b.positions[u.id].r, b.positions[u.id].c), dmgMult: 1 }));
+      }
+      const aoe = combat.resolveAoE(attacker, abilityName, targets, board.tileAt(aPos.r, aPos.c));
+      const outcomes = [];
+      for (const e of aoe.events) {
+        const u = b.units[e.targetId];
+        u.health = Math.max(0, u.health - e.damage);
+        if (u.health <= 0) { u.alive = false; delete b.positions[u.id]; }
+        outcomes.push({ targetId: e.targetId, type: e.type, damage: e.damage, dmgMult: e.dmgMult, hp: u.health });
+      }
+      b.acted[attackerId] = true;
+      checkWin(room);
+      io.to(room.code).emit("attackResult", { attackerId, abilityName, aoe: true, targets: outcomes });
+      cb && cb({ ok: true, aoe: true, targets: outcomes });
+      broadcast(room);
+      return;
+    }
+
     // Defender may counter only if it can reach the attacker AND isn't Injured this turn.
     const defenderCanCounter = combat.inRange(dPos, aPos, combat.getAttackRange(defender, null)) && !hasStatus(defender, "injured");
 

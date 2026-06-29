@@ -378,6 +378,41 @@ hr("INJURING — a connecting hit stops the target countering your OTHER units t
   check(!status.hasStatus(D, "injured"), "'injured' clears at the end of the turn it was applied (does NOT carry to later turns)");
 }
 
+// ───────────────────────── MULTI-TARGET (RADIAL / METEOR) ─────────────────────────
+hr("RADIAL — one strike per enemy in range, NO counters (fire Eruption, 3 targets)");
+{
+  let totalEvents = 0, counters = 0, anyDamaged = 0, hits = 0;
+  for (let i = 0; i < N; i++) {
+    const A = mkUnit(1, 1, "fire", ["Eruption"], { type: "mage", magick: 10 });
+    const targets = [2, 3, 4].map((id) => ({ unit: mkUnit(id, 2, "sword", ["Sword Dance", "Evasion"], { health: 999, maxHealth: 999 }), tile: TILE, dmgMult: 1 }));
+    const r = combat.resolveAoE(A, "Eruption", targets, TILE);
+    totalEvents += r.events.length;
+    counters += r.events.filter((e) => e.by !== undefined).length;
+    for (const e of r.events) { if (e.damage > 0) anyDamaged++; if (e.type === "hit" || e.type === "crit") hits++; }
+  }
+  console.log(`  ${N} casts × 3 targets = ${totalEvents} strikes; landed ${hits}, dealt damage ${anyDamaged}; counter events: ${counters}`);
+  check(totalEvents === N * 3, "exactly one strike per target, every cast");
+  check(counters === 0, "Radial never produces a counterattack");
+}
+
+hr("METEOR — primary full + ⅓ splash to adjacent (each splash = floor(1/3 of its own strike))");
+{
+  let viol = 0, splashLT = 0, samples = [];
+  for (let i = 0; i < N; i++) {
+    const A = mkUnit(1, 1, "bow", ["Explosive Volley"], { strength: 10 });
+    const prim = { unit: mkUnit(2, 2, "sword", ["Sword Dance"], { health: 999, maxHealth: 999, luck: 30, speed: 0, skill: 0, knowledge: 0 }), tile: TILE, dmgMult: 1 };
+    const spl = { unit: mkUnit(3, 2, "sword", ["Sword Dance"], { health: 999, maxHealth: 999, luck: 30, speed: 0, skill: 0, knowledge: 0 }), tile: TILE, dmgMult: 1 / 3 };
+    const r = combat.resolveAoE(A, "Explosive Volley", [prim, spl], TILE, () => 0.5); // deterministic: identical targets
+    const p = r.events[0].damage, s = r.events[1].damage;
+    if (s !== Math.floor(p * (1 / 3))) viol++;
+    if (s < p) splashLT++;
+    if (i < 3) samples.push(`primary ${p} → splash ${s} (= floor(${p}/3) = ${Math.floor(p / 3)})`);
+  }
+  samples.forEach((x) => console.log("  " + x));
+  check(viol === 0, "splash damage == floor(1/3 of the same strike) every time");
+  check(splashLT === N, "splash always less than the primary's full damage");
+}
+
 console.log("\n" + "═".repeat(78));
 console.log(`SIMULATION SUMMARY:  ${PASS} checks passed, ${FAIL} failed.`);
 console.log("═".repeat(78) + "\n");

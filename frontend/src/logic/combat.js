@@ -35,6 +35,13 @@ export function getAttackRange(character, ability) {
   return Math.max(1, num(w.range) || 1);
 }
 
+// Max enemies a Radial ability strikes (mirrors backend/combat.js). Infinity = all in range.
+export const RADIAL_TARGETS = {
+  "Crescent Slash": Infinity, "Rend": 3, "Flurry": 4, "Spear Sweep": 3, "Vault": 3,
+  "Eruption": 4, "Torrent": 3, "Quake": 3, "Discharge": 4, "Natures Grasp": 3,
+  "Gust": 3, "Ostracism": 2, "Tentatio": 3, "Fortuna's Choice": 3,
+};
+
 export function manhattan(a, b) {
   return Math.abs(a.r - b.r) + Math.abs(a.c - b.c);
 }

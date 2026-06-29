@@ -170,4 +170,18 @@ const sightedLands = atkLandings(false, 2000);
 const blindLands = atkLandings(true, 2000);
 assert.ok(blindLands < sightedLands, `blinding should reduce landed hits (sighted ${sightedLands} vs blind ${blindLands})`);
 
+// 19. AoE (Radial/Meteor): one strike per target, NO counters; Meteor splash = floor(1/3 damage).
+const mid2 = () => 0.5; // hits, no block/crit (target luck high)
+const aoeAtk = mk({ id: 1, base_weapon: "fire", type: "mage", abilities: ["Eruption"], magick: 12, defense: 0, luck: 0 });
+const tg = (id) => mk({ id, base_weapon: "sword", abilities: ["Sword Dance"], health: 1000, defense: 0, resistance: 0, luck: 20, speed: 0, skill: 0, knowledge: 0 });
+const aoe = combat.resolveAoE(aoeAtk, "Eruption", [
+  { unit: tg(2), tile: n, dmgMult: 1 },
+  { unit: tg(3), tile: n, dmgMult: 1 / 3 },
+], n, mid2);
+assert.strictEqual(aoe.events.length, 2, "resolveAoE produces one event per target");
+assert.ok(aoe.events.every((e) => e.targetId != null && e.by === undefined), "AoE events are target strikes with no counters");
+const full = aoe.events[0].damage, splash = aoe.events[1].damage;
+assert.ok(full > 0, "primary takes full damage");
+assert.strictEqual(splash, Math.floor(full * (1 / 3)), `meteor splash = floor(1/3 full): expected ${Math.floor(full / 3)}, got ${splash}`);
+
 console.log("All combat sanity checks passed ✓");

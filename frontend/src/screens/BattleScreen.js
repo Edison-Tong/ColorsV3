@@ -27,6 +27,7 @@ import {
   previewStrike,
   reachable,
   TERRAIN_FX,
+  RADIAL_TARGETS,
 } from "../logic/combat";
 
 const CELL = 46; // fixed tile size; the board scrolls when bigger than the screen
@@ -54,8 +55,8 @@ const TYPE_INFO = {
   Maiming: { label: "Maiming", desc: "Cancels their counter on a hit", done: true },
   Obscuring: { label: "Obscuring", desc: "Halves their counter accuracy", done: true },
   Injuring: { label: "Injuring", desc: "Target can't counter this turn", done: true },
-  Radial: { label: "Radial", desc: "Hits all adjacent enemies", done: false },
-  Meteor: { label: "Meteor", desc: "Ranged; ⅓ splash to nearby tiles", done: false },
+  Radial: { label: "Radial", desc: "Hits several enemies in range (no counters)", done: true },
+  Meteor: { label: "Meteor", desc: "Ranged; ⅓ splash to adjacent enemies", done: true },
   Piercing: { label: "Piercing", desc: "Ignores the target's protection", done: true },
   Efficiency: { label: "Efficiency", desc: "×1.3 to a stat vs certain units", done: false },
   Brave: { label: "Brave", desc: "Two strikes before they counter", done: true },
@@ -508,7 +509,9 @@ export default function BattleScreen({ route, navigation }) {
       {/* Attack result overlay */}
       <Modal visible={!!result} transparent animationType="fade" onRequestClose={() => setResult(null)}>
         <Pressable style={styles.resultBackdrop} onPress={() => setResult(null)}>
-          {result && <ResultCard result={result} units={units} userId={userId} />}
+          {result && (result.aoe
+            ? <AoEResultCard result={result} units={units} userId={userId} />
+            : <ResultCard result={result} units={units} userId={userId} />)}
         </Pressable>
       </Modal>
 
@@ -839,6 +842,15 @@ function AttackChooser({ attacker, target, dist, onPick, onCancel, atkTile, defT
                 💥 ~{p.damage} 🎯 {p.hitPct}% 🛡️ {p.blockPct}% ✨ {p.critPct}% 📏 {range}
               </Text>
               {(() => {
+                const t = opt.ability && opt.ability.type;
+                if (t === "Radial") {
+                  const n = RADIAL_TARGETS[opt.name] ?? 3;
+                  return <Text style={styles.aoeNote}>🌀 hits up to {n === Infinity ? "all" : n} enemies in range · no counters</Text>;
+                }
+                if (t === "Meteor") return <Text style={styles.aoeNote}>☄️ primary + ⅓ splash to adjacent enemies · no counters</Text>;
+                return null;
+              })()}
+              {(() => {
                 const info = typeInfo(opt.ability ? opt.ability.type : "Damage");
                 return (
                   <Text style={[styles.optEffect, !info.done && styles.optEffectSoon]}>
@@ -914,6 +926,40 @@ function ResultCard({ result, units, userId }) {
     </Torn>
   );
 }
+
+// Multi-target (Radial / Meteor) result: the attacker plus one row per enemy struck.
+function AoEResultCard({ result, units, userId }) {
+  const atk = units[result.attackerId] || {};
+  const atkMine = atk.ownerId === userId;
+  const targets = result.targets || [];
+  return (
+    <Torn style={styles.resultCard} strokeWidth={2}>
+      <Text style={styles.resultTitle}>
+        <Text style={{ color: atkMine ? theme.mine : theme.enemy }}>
+          {WEAPON_GLYPH[atk.base_weapon]}{atk.name}
+        </Text>{" "}
+        🌀 {result.abilityName}
+      </Text>
+      {targets.map((t, i) => {
+        const u = units[t.targetId] || {};
+        const o = OUTCOME[t.type] || OUTCOME.hit;
+        return (
+          <View key={i} style={styles.resultRow}>
+            <Text style={[styles.resultActor, { color: u.ownerId === userId ? "#7db4ff" : "#ff8aa0" }]} numberOfLines={1}>
+              {WEAPON_GLYPH[u.base_weapon] || "⚔️"} {u.name || "?"}{t.dmgMult !== 1 ? " (splash)" : ""}
+            </Text>
+            <Text style={styles.resultEmoji}>{o.emoji}</Text>
+            <Text style={[styles.resultText, { color: o.color }]}>
+              {t.hp <= 0 ? "☠️" : t.damage > 0 ? `−${t.damage}${t.type === "crit" ? " CRIT!" : ""}` : o.word}
+            </Text>
+          </View>
+        );
+      })}
+      <Text style={styles.tapDismiss}>tap to dismiss</Text>
+    </Torn>
+  );
+}
+
 function CastCard({ res, units, userId }) {
   const caster = units[res.casterId] || {};
   const target = units[res.targetId] || {};
@@ -1274,6 +1320,7 @@ const styles = StyleSheet.create({
   optMeta: { color: theme.warn, fontSize: 13, marginTop: 4 },
   optEffect: { color: theme.good, fontSize: 12, marginTop: 3, fontStyle: "italic" },
   optEffectSoon: { color: theme.textDim },
+  aoeNote: { color: "#e0b0ff", fontSize: 12, marginTop: 3, fontWeight: "700" },
   optGo: { color: theme.textDim, fontSize: 24 },
   sheetNote: { color: theme.textDim, fontSize: 12, marginVertical: 8, fontStyle: "italic" },
   cancelBtn: { padding: 14, alignItems: "center" },

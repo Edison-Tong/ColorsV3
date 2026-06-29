@@ -307,9 +307,37 @@ function resolveExchange(attacker, defender, abilityName, defenderCanCounter, at
   }
 }
 
+// Max enemies a Radial ability strikes (derived from each ability's effect text).
+// Infinity = "all foes in range" (e.g. Crescent Slash "all adjacent foes"). Default 3.
+const RADIAL_TARGETS = {
+  "Crescent Slash": Infinity, "Rend": 3, "Flurry": 4, "Spear Sweep": 3, "Vault": 3,
+  "Eruption": 4, "Torrent": 3, "Quake": 3, "Discharge": 4, "Natures Grasp": 3,
+  "Gust": 3, "Ostracism": 2, "Tentatio": 3, "Fortuna's Choice": 3,
+};
+
+// Resolve a multi-target (Radial / Meteor) attack: ONE strike per target, NO counters.
+// `targets` = [{ unit, tile, dmgMult }]. dmgMult scales the damage (1 = full, 1/3 = Meteor splash).
+// Each target uses the attacker's stats vs that target's terrain (high-ground is relative per target),
+// mirroring how a 1v1 strike is computed. Returns per-target outcomes; the caller applies HP/death.
+function resolveAoE(attacker, abilityName, targets, atkTile = NORMAL_TILE, rng = Math.random) {
+  const ability = findAbility(attacker, abilityName);
+  const events = [];
+  for (const t of targets) {
+    const atk = applyTerrain(computeAllStats(attacker, ability, defMultFor(atkTile)), atkTile, t.tile);
+    const def = applyTerrain(computeAllStats(t.unit, null, defMultFor(t.tile)), t.tile, atkTile);
+    let r = strike(atk, def, rng);
+    const mult = t.dmgMult || 1;
+    if (mult !== 1 && r.damage > 0) r = { ...r, damage: Math.floor(r.damage * mult) };
+    events.push({ targetId: t.unit.id, dmgMult: mult, ...r });
+  }
+  return { events };
+}
+
 module.exports = {
   getWeaponStats,
   isMage,
+  RADIAL_TARGETS,
+  resolveAoE,
   getMoveValue,
   findAbility,
   getAttackRange,
