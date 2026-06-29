@@ -71,7 +71,7 @@ console.log(`\nColorsV3 — attack-type simulations (${N} trials each, live RNG,
 // ───────────────────────── WITHIN-EXCHANGE TYPES ─────────────────────────
 
 // DAMAGE
-hr("DAMAGE — standard A1/D1/A2/D2 exchange (sword Sword Dance vs sword)");
+hr("DAMAGE — default is ONE strike each: A1, D1 (even agility, sword vs sword)");
 {
   const rs = [];
   for (let i = 0; i < N; i++) {
@@ -79,12 +79,26 @@ hr("DAMAGE — standard A1/D1/A2/D2 exchange (sword Sword Dance vs sword)");
     rs.push(doAttack(b, 1, 2, "Sword Dance"));
   }
   console.log("  event-sequence distribution:"); showSeqs(bySeq(rs));
-  const okOrder = rs.every((r) => { const s = r.events.map((e) => e.step); const order = ["A1", "D1", "A2", "D2"]; let j = 0; return s.every((x) => { while (j < order.length && order[j] !== x) j++; return j++ < order.length; }); });
   const at = outcomeTally(rs, "attacker"), dt = outcomeTally(rs, "defender");
   console.log(`  attacker strikes: hit ${at.hit} / crit ${at.crit} / miss ${at.miss} / block ${at.block}`);
   console.log(`  defender strikes: hit ${dt.hit} / crit ${dt.crit} / miss ${dt.miss} / block ${dt.block}`);
-  check(okOrder, "every trial follows A1→D1→A2→D2 ordering (subset allowed)");
-  check(rs.every((r) => r.events.length <= 4), "never more than 4 strikes per exchange");
+  check(rs.every((r) => { const s = r.events.map((e) => e.step); return s.join(",") === "A1,D1" || s.join(",") === "A1"; }), "even agility -> exactly A1,D1 (or A1 if the defender died)");
+}
+
+// AGILITY EDGE (the new bonus-strike rule)
+hr("AGILITY EDGE — a unit with agility ≥4 higher gets a bonus strike (fast dagger vs slow sword)");
+{
+  const fastA = () => mkUnit(1, 1, "dagger", ["Throwing Knives"], { speed: 9, health: 999, maxHealth: 999 });
+  const slowD = () => mkUnit(2, 2, "sword", ["Sword Dance"], { speed: 3, health: 999, maxHealth: 999 });
+  const aAgi = combat.computeAllStats(fastA()).agility, dAgi = combat.computeAllStats(slowD()).agility;
+  console.log(`  fast dagger agility ${aAgi} vs slow sword agility ${dAgi} (edge = diff ≥4: ${aAgi - dAgi >= 4})`);
+  const atkEdge = [], defEdge = [];
+  for (let i = 0; i < N; i++) atkEdge.push(doAttack(mkBattle([fastA(), slowD()]), 1, 2, "Throwing Knives").events.map((e) => e.step).join(","));
+  for (let i = 0; i < N; i++) defEdge.push(doAttack(mkBattle([slowD(), fastA()]), 2, 1, "Sword Dance").events.map((e) => e.step).join(","));
+  console.log("  fast unit ATTACKING:"); showSeqs(atkEdge.reduce((m, k) => ((m[k] = (m[k] || 0) + 1), m), {}));
+  console.log("  fast unit DEFENDING:"); showSeqs(defEdge.reduce((m, k) => ((m[k] = (m[k] || 0) + 1), m), {}));
+  check(atkEdge.every((s) => s === "A1,D1,A2"), "agility-edge attacker -> A1,D1,A2");
+  check(defEdge.every((s) => s === "A1,D1,D2"), "agility-edge defender -> A1,D1,D2");
 }
 
 // MAIMING
@@ -114,9 +128,11 @@ hr("MAIMING — a landed attacker strike cancels its matching counter (axe Disme
 // OBSCURING (statistical — compare defender counter land-rate vs a Damage baseline)
 hr("OBSCURING — once the attacker lands, the defender's counters get accuracy ×0.5 (sword Foul Play)");
 {
+  // With a single counter (D1) the obscuring drop is small (~3% at these tank stats — the weapon's
+  // base hit% dominates), so we run many trials to clear the noise.
   function counterLandRate(ability) {
     let counters = 0, landed = 0;
-    for (let i = 0; i < N * 5; i++) {
+    for (let i = 0; i < N * 40; i++) {
       const A = mkUnit(1, 1, "sword", ["Foul Play", "Sword Dance"], { skill: 10 });
       const D = mkUnit(2, 2, "sword", ["Sword Dance", "Evasion"]);
       const b = mkBattle([A, D]);
@@ -157,7 +173,7 @@ hr("PIERCING — ignores the target's protection (axe Armor Cleaver vs a defense
 }
 
 // BRAVE
-hr("BRAVE — both attacker strikes land before the defender counters (dagger Blitz vs sword)");
+hr("BRAVE — attacker's two strikes land before the counter: A1, A2, D1 (dagger Blitz vs sword)");
 {
   const rs = [];
   for (let i = 0; i < N; i++) {
@@ -268,41 +284,30 @@ hr("DoT STACKING + LETHALITY");
 
 // ───────────────────────── CONTROL TYPES ─────────────────────────
 
-// SLOWING (incl. the bug we fixed: a slowed attacker must NOT rob the defender of its 2nd counter)
-hr("SLOWING — afflicted unit loses ONLY its own 2nd strike; lasts 1 turn (dagger Stagnate)");
+// SLOWING — cancels the BONUS strike the agility edge would grant. Lasts 1 turn.
+hr("SLOWING — cancels the agility-edge bonus strike; lasts 1 turn");
 {
-  // Apply via attack, then verify lifecycle.
-  const victim = mkUnit(2, 2, "sword", ["Sword Dance", "Evasion"], { health: 9999, maxHealth: 9999 });
-  const slower = mkUnit(1, 1, "dagger", ["Stagnate", "Pin"], { strength: 8 });
-  let b = mkBattle([slower, victim]);
-  let r = doAttack(b, 1, 2, "Stagnate");
-  // attacker keeps hitting until it lands so the status surely applies
-  let guard = 0; while (!status.hasStatus(victim, "slowed") && guard++ < 50) { victim.statuses = []; r = doAttack(mkBattle([slower, victim]), 1, 2, "Stagnate"); }
-  check(status.hasStatus(victim, "slowed"), "Stagnate applies 'slowed' on a landing hit");
+  const fastAtk = (slowed) => mkUnit(1, 1, "dagger", ["Throwing Knives"], { speed: 9, health: 999, maxHealth: 999, statuses: slowed ? [{ type: "slowed", turnsLeft: 1 }] : [] });
+  const fastDef = (slowed) => mkUnit(2, 2, "dagger", ["Throwing Knives"], { speed: 9, health: 999, maxHealth: 999, statuses: slowed ? [{ type: "slowed", turnsLeft: 1 }] : [] });
+  const slowSword = (id, owner) => mkUnit(id, owner, "sword", ["Sword Dance"], { speed: 3, health: 999, maxHealth: 999 });
 
-  // Victim's turn: victim (slowed) ATTACKS a fresh foe -> should forfeit A2, but foe keeps BOTH counters.
-  const foe = mkUnit(3, 1, "sword", ["Sword Dance", "Evasion"], { health: 9999, maxHealth: 9999 });
-  const bSlowAtk = mkBattle([foe, victim], 2); // victim's turn (owner 2)
-  // force a clean all-land read by sampling sequences across trials
-  const seqSlowed = {};
-  for (let i = 0; i < N; i++) {
-    const v = mkUnit(2, 2, "sword", ["Sword Dance"], { health: 9999, maxHealth: 9999, statuses: [{ type: "slowed", turnsLeft: 1 }] });
-    const f = mkUnit(3, 1, "sword", ["Sword Dance"], { health: 9999, maxHealth: 9999 });
-    const rr = doAttack(mkBattle([v, f], 2), 2, 3, "Sword Dance");
-    const k = steps(rr); seqSlowed[k] = (seqSlowed[k] || 0) + 1;
-  }
-  console.log("  slowed unit ATTACKING (it is owner-2's turn) — sequence distribution:"); showSeqs(seqSlowed);
-  const noA2 = Object.keys(seqSlowed).every((k) => !k.split(",").includes("A2"));
-  const defKeepsD2 = Object.keys(seqSlowed).some((k) => k.split(",").includes("D2"));
-  check(noA2, "slowed attacker NEVER makes a 2nd strike (no A2)");
-  check(defKeepsD2, "the un-slowed defender STILL gets its 2nd counter (D2) — the fixed bug");
+  const tally = (fn) => { const m = {}; for (let i = 0; i < N; i++) { const k = fn().events.map((e) => e.step).join(","); m[k] = (m[k] || 0) + 1; } return m; };
+  const base = tally(() => doAttack(mkBattle([fastAtk(false), slowSword(2, 2)]), 1, 2, "Throwing Knives"));
+  const slowedA = tally(() => doAttack(mkBattle([fastAtk(true), slowSword(2, 2)]), 1, 2, "Throwing Knives"));
+  const slowedD = tally(() => doAttack(mkBattle([slowSword(1, 1), fastDef(true)]), 1, 2, "Sword Dance"));
+  console.log("  fast attacker, NOT slowed:"); showSeqs(base);
+  console.log("  fast attacker, SLOWED:"); showSeqs(slowedA);
+  console.log("  fast DEFENDER, SLOWED:"); showSeqs(slowedD);
+  check(Object.keys(base).every((k) => k === "A1,D1,A2"), "the agility edge normally grants the attacker A2");
+  check(Object.keys(slowedA).every((k) => k === "A1,D1"), "Slowing cancels the attacker's bonus A2");
+  check(Object.keys(slowedD).every((k) => k === "A1,D1"), "Slowing cancels the defender's bonus D2");
 
   // Lifecycle: present on the victim's next turn, gone after.
   const v = mkUnit(2, 2, "sword", ["Sword Dance"], { statuses: [{ type: "slowed", turnsLeft: 1 }] });
   const lb = { units: { 2: v }, positions: { 2: { r: 0, c: 0 } }, turnUserId: 1 };
-  endTurn(lb); const duringTurn = status.hasStatus(v, "slowed"); // victim's turn now
-  endTurn(lb); const afterTurn = status.hasStatus(v, "slowed");  // victim ended its turn
-  console.log(`  lifecycle: slowed during victim's next turn = ${duringTurn}; still slowed after that turn = ${afterTurn}`);
+  endTurn(lb); const duringTurn = status.hasStatus(v, "slowed");
+  endTurn(lb); const afterTurn = status.hasStatus(v, "slowed");
+  console.log(`  lifecycle: slowed during victim's next turn = ${duringTurn}; still slowed after = ${afterTurn}`);
   check(duringTurn && !afterTurn, "slow is active for exactly the victim's next turn, then clears");
 }
 

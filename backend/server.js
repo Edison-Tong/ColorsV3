@@ -252,6 +252,7 @@ function placeTeam(ids, side) {
 
 function publicState(room) {
   const b = room.battle;
+  const top = b.history && b.history.length ? b.history[b.history.length - 1] : null;
   return {
     code: room.code,
     hostId: room.hostId,
@@ -261,8 +262,11 @@ function publicState(room) {
     winnerId: b.winnerId,
     units: b.units,
     positions: b.positions,
-    moveRemaining: b.moveRemaining,
+    moved: b.moved,
     acted: b.acted,
+    canUndo: !!(top && top.kind === "move"), // is the most recent event an undoable move?
+    lastMoveId: top && top.kind === "move" ? top.charId : null,
+    sandbox: !!room.sandbox, // one client controls both sides
     rows: BOARD_ROWS,
     cols: BOARD_COLS,
   };
@@ -297,11 +301,40 @@ function startBattle(room) {
   const b = room.battle;
   const first = Math.random() < 0.5 ? room.hostId : room.joinerId;
   b.turnUserId = first;
-  b.moveRemaining = {}; // per-unit movement budget for the turn; defaults to full move when absent
-  b.acted = {};
+  b.moved = {};   // per-unit: has it used its single move this turn
+  b.acted = {};   // per-unit: has it used its action (attack/cast) this turn
+  b.history = []; // chronological stack of this turn's events: { kind:"move", charId, from } | { kind:"act", charId }
+                  // — undo pops the most recent MOVE; once an "act" is on top, you can't undo past it.
   b.over = false;
   b.winnerId = null;
   io.to(room.code).emit("battleStart", { ...publicState(room), firstUserId: first, terrain: board.terrain });
+}
+
+// ── Sandbox / solo-test room ────────────────────────────────────────────────
+// A permanent room code where ONE client controls BOTH teams (the red & blue seed teams), taking
+// each side's turn in sequence — so a single tester can exercise every ability without two devices.
+// genCode() never produces digits 0/1, so "0000" can never collide with a real room.
+const SANDBOX_CODE = "0000";
+async function buildSandboxRoom() {
+  const red = await store.getUserByName("red");
+  const blue = await store.getUserByName("blue");
+  if (!red || !blue) throw new Error('Sandbox needs the seed teams — run "npm run seed" first');
+  const redTeam = (await store.getTeams(red.id))[0];
+  const blueTeam = (await store.getTeams(blue.id))[0];
+  if (!redTeam || !blueTeam) throw new Error('Sandbox needs red & blue teams — run "npm run seed"');
+  const redChars = await store.getCharacters(redTeam.id);
+  const blueChars = await store.getCharacters(blueTeam.id);
+  const room = {
+    code: SANDBOX_CODE,
+    sandbox: true,
+    hostId: red.id, hostName: "Crimson Host (red)", hostSocket: null,
+    joinerId: blue.id, joinerName: "Azure Guard (blue)", joinerSocket: null,
+    hostCharIds: redChars.map((c) => c.id),
+    joinerCharIds: blueChars.map((c) => c.id),
+    battle: { units: { ...buildUnits(red.id, redChars), ...buildUnits(blue.id, blueChars) }, positions: {}, turnUserId: null, over: false },
+  };
+  room.battle.positions = { ...placeTeam(room.hostCharIds, "host"), ...placeTeam(room.joinerCharIds, "joiner") };
+  return room;
 }
 
 io.on("connection", (socket) => {
@@ -343,6 +376,17 @@ io.on("connection", (socket) => {
 
   // Joiner enters a code with their team. Both teams present -> battle begins.
   on("join", async ({ userId, username, code, teamId }, cb) => {
+    // Sandbox: joining "0000" (re)builds a fresh red-vs-blue battle this one socket controls entirely.
+    if (String(code || "").toUpperCase() === SANDBOX_CODE) {
+      const room = await buildSandboxRoom();
+      rooms[SANDBOX_CODE] = room;
+      socket.join(SANDBOX_CODE);
+      socket.data.code = SANDBOX_CODE;
+      socket.data.userId = Number(userId); // real id; control is driven by turnUserId in sandbox
+      cb && cb({ code: SANDBOX_CODE, hostName: room.hostName });
+      startBattle(room);
+      return;
+    }
     const room = rooms[String(code || "").toUpperCase()];
     if (!room) return cb && cb({ error: "Invalid code" });
     if (room.joinerId) return cb && cb({ error: "Room is full" });
@@ -377,18 +421,15 @@ io.on("connection", (socket) => {
     const room = rooms[code];
     if (!room || !room.battle) return cb && cb({ error: "No battle" });
     const b = room.battle;
-    const me = socket.data.userId;
+    const me = room.sandbox ? b.turnUserId : socket.data.userId; // sandbox: act as the current side
     if (b.over) return cb && cb({ error: "Battle over" });
     if (b.turnUserId !== me) return cb && cb({ error: "Not your turn" });
 
     const unit = b.units[charId];
     if (!unit || unit.ownerId !== me || !unit.alive) return cb && cb({ error: "Invalid unit" });
     if (hasStatus(unit, "immobilized")) return cb && cb({ error: "Immobilized — can't move this turn" });
-
-    // Movement is a per-turn budget: a unit may move multiple times (and move before
-    // or after attacking) as long as it has movement points left. Attacking does not
-    // consume movement.
-    const remaining = b.moveRemaining[charId] != null ? b.moveRemaining[charId] : combat.getMoveValue(unit);
+    // ONE move per turn: a unit may move a single time (path up to its full movement value).
+    if (b.moved[charId]) return cb && cb({ error: "This unit has already moved this turn" });
 
     const from = b.positions[charId];
     if (!to || to.r < 0 || to.r >= BOARD_ROWS || to.c < 0 || to.c >= BOARD_COLS) return cb && cb({ error: "Off board" });
@@ -396,8 +437,8 @@ io.on("connection", (socket) => {
     // Path-based reachability: respects terrain (high ground / stairs) and unit blocking.
     const occupied = new Set();
     for (const [id, p] of Object.entries(b.positions)) if (Number(id) !== Number(charId)) occupied.add(p.r + ":" + p.c);
-    const { cells, dist } = combat.reachable(
-      from, remaining,
+    const { cells } = combat.reachable(
+      from, combat.getMoveValue(unit),
       (r, c) => board.tileAt(r, c),
       (r, c) => occupied.has(r + ":" + c),
       BOARD_ROWS, BOARD_COLS
@@ -406,7 +447,26 @@ io.on("connection", (socket) => {
     if (!cells.has(destKey)) return cb && cb({ error: "Can't move there" });
 
     b.positions[charId] = { r: to.r, c: to.c };
-    b.moveRemaining[charId] = remaining - dist.get(destKey);
+    b.moved[charId] = true;
+    b.history.push({ kind: "move", charId: Number(charId), from }); // remember origin for undo
+    cb && cb({ ok: true });
+    broadcast(room);
+  });
+
+  // Undo the MOST RECENT move (LIFO). You can keep undoing back through this turn's moves until you
+  // hit an attack/cast — once an action is on top of the stack, nothing before it can be undone.
+  // (Popping the latest move always returns to a now-empty tile, so undos never collide.)
+  on("undoMove", ({ code }, cb) => {
+    const room = rooms[code];
+    if (!room || !room.battle) return cb && cb({ error: "No battle" });
+    const b = room.battle;
+    if (b.over) return cb && cb({ error: "Battle over" });
+    if (!room.sandbox && b.turnUserId !== socket.data.userId) return cb && cb({ error: "Not your turn" });
+    const top = b.history.length ? b.history[b.history.length - 1] : null;
+    if (!top || top.kind !== "move") return cb && cb({ error: top ? "Can't undo past an attack" : "No move to undo" });
+    b.history.pop();
+    b.positions[top.charId] = top.from;
+    b.moved[top.charId] = false;
     cb && cb({ ok: true });
     broadcast(room);
   });
@@ -416,7 +476,7 @@ io.on("connection", (socket) => {
     const room = rooms[code];
     if (!room || !room.battle) return cb && cb({ error: "No battle" });
     const b = room.battle;
-    const me = socket.data.userId;
+    const me = room.sandbox ? b.turnUserId : socket.data.userId; // sandbox: act as the current side
     if (b.over) return cb && cb({ error: "Battle over" });
     if (b.turnUserId !== me) return cb && cb({ error: "Not your turn" });
 
@@ -433,10 +493,12 @@ io.on("connection", (socket) => {
     // Silenced units can still make a basic attack, but not use a named ability.
     if (abilityName && hasStatus(attacker, "silenced")) return cb && cb({ error: "Silenced — can't use abilities this turn" });
     const ability = combat.findAbility(attacker, abilityName);
-    const range = combat.getAttackRange(attacker, ability);
+    const range = combat.getRange(attacker, ability); // { min, max }
     const aPos = b.positions[attackerId];
     const dPos = b.positions[defenderId];
-    if (!combat.inRange(aPos, dPos, range)) return cb && cb({ error: "Target out of range" });
+    const aTile = board.tileAt(aPos.r, aPos.c);
+    const dTile = board.tileAt(dPos.r, dPos.c);
+    if (!combat.inAttackRange(aPos, dPos, aTile, dTile, range)) return cb && cb({ error: "Target out of range" });
 
     // ── Multi-target attacks (Radial / Meteor): one strike per enemy, NO counters. ──
     if (ability && (ability.type === "Radial" || ability.type === "Meteor")) {
@@ -444,7 +506,7 @@ io.on("connection", (socket) => {
       let targets;
       if (ability.type === "Meteor") {
         // Primary takes a full hit; enemies adjacent to the primary take 1/3 splash.
-        targets = [{ unit: defender, tile: board.tileAt(dPos.r, dPos.c), dmgMult: 1 }];
+        targets = [{ unit: defender, tile: dTile, dmgMult: 1 }];
         for (const u of enemies) {
           if (u.id === defenderId) continue;
           const p = b.positions[u.id];
@@ -454,12 +516,12 @@ io.on("connection", (socket) => {
         // Radial: the primary plus the nearest other in-range enemies, up to the ability's cap.
         const maxN = combat.RADIAL_TARGETS[abilityName] ?? 3;
         const others = enemies
-          .filter((u) => u.id !== defenderId && combat.inRange(aPos, b.positions[u.id], range))
+          .filter((u) => u.id !== defenderId && combat.inAttackRange(aPos, b.positions[u.id], aTile, board.tileAt(b.positions[u.id].r, b.positions[u.id].c), range))
           .sort((a, c) => combat.manhattan(aPos, b.positions[a.id]) - combat.manhattan(aPos, b.positions[c.id]));
         const chosen = [defender, ...others].slice(0, maxN === Infinity ? undefined : maxN);
         targets = chosen.map((u) => ({ unit: u, tile: board.tileAt(b.positions[u.id].r, b.positions[u.id].c), dmgMult: 1 }));
       }
-      const aoe = combat.resolveAoE(attacker, abilityName, targets, board.tileAt(aPos.r, aPos.c));
+      const aoe = combat.resolveAoE(attacker, abilityName, targets, aTile);
       const outcomes = [];
       for (const e of aoe.events) {
         const u = b.units[e.targetId];
@@ -468,6 +530,7 @@ io.on("connection", (socket) => {
         outcomes.push({ targetId: e.targetId, type: e.type, damage: e.damage, dmgMult: e.dmgMult, hp: u.health });
       }
       b.acted[attackerId] = true;
+      b.history.push({ kind: "act", charId: Number(attackerId) });
       checkWin(room);
       io.to(room.code).emit("attackResult", { attackerId, abilityName, aoe: true, targets: outcomes });
       cb && cb({ ok: true, aoe: true, targets: outcomes });
@@ -475,14 +538,13 @@ io.on("connection", (socket) => {
       return;
     }
 
-    // Defender may counter only if it can reach the attacker AND isn't Injured this turn.
-    const defenderCanCounter = combat.inRange(dPos, aPos, combat.getAttackRange(defender, null)) && !hasStatus(defender, "injured");
+    // Defender may counter only if its BASIC weapon reach covers the attacker (using the same
+    // height-aware distance) AND it isn't Injured this turn.
+    const defenderCanCounter =
+      combat.inAttackRange(dPos, aPos, dTile, aTile, combat.getRange(defender, null)) && !hasStatus(defender, "injured");
 
     // Terrain effects: each combatant uses the tile it's standing on.
-    const result = combat.resolveExchange(
-      attacker, defender, abilityName, defenderCanCounter,
-      board.tileAt(aPos.r, aPos.c), board.tileAt(dPos.r, dPos.c)
-    );
+    const result = combat.resolveExchange(attacker, defender, abilityName, defenderCanCounter, aTile, dTile);
 
     // Injuring: a connecting attack disables the target's counters for the rest of this turn.
     if (ability && ability.type === "Injuring" && result.attackerHit) addStatus(defender, "injured", { clearOn: "turnEnd" });
@@ -498,7 +560,8 @@ io.on("connection", (socket) => {
       const eff = ON_HIT_STATUS[ability.type];
       if (eff) addStatus(defender, eff.status, { turnsLeft: eff.turns, dot: !!eff.dot });
     }
-    b.acted[attackerId] = true; // one attack per unit per turn; movement budget is unaffected
+    b.acted[attackerId] = true; // one attack per unit per turn; movement is its own action
+    b.history.push({ kind: "act", charId: Number(attackerId) });
 
     checkWin(room);
 
@@ -518,7 +581,7 @@ io.on("connection", (socket) => {
     const room = rooms[code];
     if (!room || !room.battle) return cb && cb({ error: "No battle" });
     const b = room.battle;
-    const me = socket.data.userId;
+    const me = room.sandbox ? b.turnUserId : socket.data.userId; // sandbox: act as the current side
     if (b.over) return cb && cb({ error: "Battle over" });
     if (b.turnUserId !== me) return cb && cb({ error: "Not your turn" });
 
@@ -534,11 +597,14 @@ io.on("connection", (socket) => {
     const target = b.units[targetId];
     if (!target || !target.alive) return cb && cb({ error: "Invalid target" });
 
-    const range = Math.max(1, Number(special.range) || 1);
-    const dist = combat.manhattan(b.positions[casterId], b.positions[targetId]);
-    if (Number(targetId) !== Number(casterId) && dist > range) return cb && cb({ error: "Target out of range" });
+    // Specials use the same min-max + height-aware range as attacks (self-target always allowed).
+    const cPos = b.positions[casterId], tPos = b.positions[targetId];
+    const sRange = combat.parseRange(special.range != null ? special.range : 1);
+    const sDist = combat.combatDistance(cPos, tPos, board.tileAt(cPos.r, cPos.c), board.tileAt(tPos.r, tPos.c));
+    if (Number(targetId) !== Number(casterId) && !combat.withinRange(sRange, sDist)) return cb && cb({ error: "Target out of range" });
 
     b.acted[casterId] = true; // casting is the unit's action for the turn
+    b.history.push({ kind: "act", charId: Number(casterId) });
 
     io.to(room.code).emit("specialResult", {
       casterId, targetId, specialName,
@@ -552,18 +618,19 @@ io.on("connection", (socket) => {
     const room = rooms[code];
     if (!room || !room.battle) return cb && cb({ error: "No battle" });
     const b = room.battle;
-    if (b.turnUserId !== socket.data.userId) return cb && cb({ error: "Not your turn" });
+    if (!room.sandbox && b.turnUserId !== socket.data.userId) return cb && cb({ error: "Not your turn" });
     decrementStatuses(b);    // debuffs on the ending player's units count down a turn / expire
     clearTurnEndStatuses(b); // Injured etc. wear off when the turn that applied them ends
     b.turnUserId = b.turnUserId === room.hostId ? room.joinerId : room.hostId;
-    b.moveRemaining = {};
-    b.acted = {};
     // DoTs on the NEW current player's units bite at the start of their turn.
     const ticks = tickDots(b);
     if (ticks.length) {
       checkWin(room);
       io.to(room.code).emit("statusTick", { ticks, over: b.over, winnerId: b.winnerId });
     }
+    b.moved = {};
+    b.acted = {};
+    b.history = [];
     cb && cb({ ok: true });
     broadcast(room);
   });
@@ -574,11 +641,11 @@ io.on("connection", (socket) => {
     const room = rooms[code];
     if (!room || !room.battle || room.battle.turnUserId == null) return cb && cb({ error: "No active battle" });
     const me = Number(userId);
-    if (me !== room.hostId && me !== room.joinerId) return cb && cb({ error: "Not in this battle" });
+    if (!room.sandbox && me !== room.hostId && me !== room.joinerId) return cb && cb({ error: "Not in this battle" });
     socket.join(code);
     socket.data.code = code;
     socket.data.userId = me;
-    if (me === room.hostId) room.hostSocket = socket.id; else room.joinerSocket = socket.id;
+    if (!room.sandbox) { if (me === room.hostId) room.hostSocket = socket.id; else room.joinerSocket = socket.id; }
     if (room.graceTimers && room.graceTimers[me]) { clearTimeout(room.graceTimers[me]); delete room.graceTimers[me]; }
     io.to(code).emit("opponentReconnected", { userId: me });
     socket.emit("state", publicState(room)); // hand the returning client the current battle state

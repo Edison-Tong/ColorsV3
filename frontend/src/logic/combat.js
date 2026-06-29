@@ -29,10 +29,43 @@ export function findAbility(character, abilityName) {
   return (weaponsData.mageSpecialAbilities[key] || []).find((a) => a.name === abilityName) || null;
 }
 
-export function getAttackRange(character, ability) {
-  if (ability && Number(ability.range)) return Math.max(1, Number(ability.range));
+// A range value is a number N (EXACTLY N tiles) or a string "min-max" ("1-2", "2-4"). → { min, max }.
+export function parseRange(val) {
+  if (typeof val === "number") return { min: val, max: val };
+  if (typeof val === "string") {
+    const parts = val.split("-").map((x) => parseInt(x, 10));
+    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) return { min: parts[0], max: parts[1] };
+    const n = parseInt(val, 10);
+    if (!isNaN(n)) return { min: n, max: n };
+  }
+  return { min: 1, max: 1 };
+}
+
+export function getRange(character, ability) {
+  if (ability && ability.range != null) return parseRange(ability.range);
   const w = getWeaponStats(character);
-  return Math.max(1, num(w.range) || 1);
+  return parseRange(w.range != null ? w.range : 1);
+}
+
+export function getAttackRange(character, ability) {
+  return Math.max(1, getRange(character, ability).max);
+}
+
+// Distance for attack/counter: Manhattan + 1 when crossing a height boundary (adjacent high-vs-normal
+// reads as distance 2). Mirrors backend/combat.js.
+export function combatDistance(aPos, dPos, aTile, dTile) {
+  const base = manhattan(aPos, dPos);
+  const hgA = !!(aTile && aTile.hg), hgD = !!(dTile && dTile.hg);
+  return base + (hgA !== hgD ? 1 : 0);
+}
+
+export function withinRange(rangeObj, dist) {
+  return dist >= rangeObj.min && dist <= rangeObj.max;
+}
+
+export function inAttackRange(aPos, dPos, aTile, dTile, rangeObj) {
+  if (!aPos || !dPos) return false;
+  return withinRange(rangeObj, combatDistance(aPos, dPos, aTile, dTile));
 }
 
 // Max enemies a Radial ability strikes (mirrors backend/combat.js). Infinity = all in range.
@@ -198,4 +231,69 @@ export function previewStrike(attacker, defender, ability, atkTile, defTile) {
   const blockPct = Math.max(0, Math.floor(d.block - acc));
   const critPct = Math.max(0, Math.round(a.critical - d.luck));
   return { damage, hitPct, blockPct, critPct };
+}
+
+const hasStat = (u, t) => Array.isArray(u && u.statuses) && u.statuses.some((s) => s.type === t);
+const clampPct = (v) => Math.max(0, Math.min(100, Math.round(v)));
+
+// Full two-sided preview of a 1v1 exchange (mirrors backend resolveExchange's structure WITHOUT
+// rolling dice). Shows each side's per-strike odds, how many strikes each lands, the strike order,
+// the agility picture, and which side (if any) earns a bonus strike. `defenderCanCounter` is the
+// caller's range/injury check (a unit whose reach can't cover the attacker can't counter).
+export function previewExchange(attacker, defender, ability, atkTile, defTile, defenderCanCounter) {
+  const a = applyTerrain(computeAllStats(attacker, ability, defMultFor(atkTile)), atkTile, defTile);
+  const d = applyTerrain(computeAllStats(defender, null, defMultFor(defTile)), defTile, atkTile);
+  const type = ability ? ability.type : "Damage";
+  const piercing = type === "Piercing";
+
+  const aAcc = hasStat(attacker, "blinded") ? Math.round(a.accuracy * 0.5) : a.accuracy;
+  const dAcc = hasStat(defender, "blinded") ? Math.round(d.accuracy * 0.5) : d.accuracy;
+
+  // Attacker striking the defender.
+  const aProt = piercing ? 0 : a.isMage ? d.protection.magic : d.protection.melee;
+  const atkSide = {
+    damage: Math.max(0, Math.round(a.power - aProt)),
+    hitPct: clampPct(a.hitBase + (aAcc - d.evasion)),
+    blockPct: Math.max(0, Math.floor(d.block - aAcc)),
+    critPct: Math.max(0, Math.round(a.critical - d.luck)),
+  };
+  // Defender countering with its basic weapon.
+  const dProt = d.isMage ? a.protection.magic : a.protection.melee;
+  const defSide = {
+    damage: Math.max(0, Math.round(d.power - dProt)),
+    hitPct: clampPct(d.hitBase + (dAcc - a.evasion)),
+    blockPct: Math.max(0, Math.floor(a.block - dAcc)),
+    critPct: Math.max(0, Math.round(d.critical - a.luck)),
+  };
+
+  // Strike counts + order (mirror of resolveExchange).
+  const aSlow = hasStat(attacker, "slowed"), dSlow = hasStat(defender, "slowed");
+  const isBrave = type === "Brave";
+  const attackerEdge = a.agility >= d.agility + 4;
+  const defenderEdge = d.agility >= a.agility + 4;
+  const attackerDouble = (isBrave || attackerEdge) && !aSlow;
+  const defenderDouble = defenderEdge && !dSlow;
+  atkSide.strikes = attackerDouble ? 2 : 1;
+  defSide.strikes = defenderCanCounter ? (defenderDouble ? 2 : 1) : 0;
+
+  const order = [];
+  if (isBrave && attackerDouble) {
+    order.push("A1", "A2");
+    if (defSide.strikes >= 1) order.push("D1");
+    if (defSide.strikes >= 2) order.push("D2");
+  } else {
+    order.push("A1");
+    if (defSide.strikes >= 1) order.push("D1");
+    if (attackerDouble) order.push("A2");
+    if (defSide.strikes >= 2) order.push("D2");
+  }
+
+  return {
+    type,
+    attacker: atkSide,
+    defender: defSide,
+    order,
+    agility: { atk: a.agility, def: d.agility, attackerDouble, defenderDouble, attackerEdge, defenderEdge },
+    statuses: { attacker: attacker.statuses || [], defender: defender.statuses || [] },
+  };
 }

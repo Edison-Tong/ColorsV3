@@ -5,7 +5,7 @@
 // - prod:  the public, always-on backend (set this after you deploy — e.g. Render).
 //          MUST be https for TestFlight/production builds (iOS blocks plain http).
 export const ENV = {
-  local: "http://192.168.1.181:4000",
+  local: "http://10.10.21.206:4000",
   prod: "https://colors-game.onrender.com", // reused Render service (now serving V3)
 };
 

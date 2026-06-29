@@ -35,17 +35,56 @@ function findAbility(character, abilityName) {
   return sp || null;
 }
 
-// Effective attack range: ability range if an ability is used, else weapon range (min 1).
-function getAttackRange(character, ability) {
-  if (ability && Number(ability.range)) return Math.max(1, Number(ability.range));
+// A range value is either a number N (meaning EXACTLY N tiles) or a string "min-max"
+// (e.g. "1-2" = 1 or 2 tiles, "2-4" = 2 to 4). Returns { min, max }.
+function parseRange(val) {
+  if (typeof val === "number") return { min: val, max: val };
+  if (typeof val === "string") {
+    const parts = val.split("-").map((x) => parseInt(x, 10));
+    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) return { min: parts[0], max: parts[1] };
+    const n = parseInt(val, 10);
+    if (!isNaN(n)) return { min: n, max: n };
+  }
+  return { min: 1, max: 1 };
+}
+
+// Effective attack reach { min, max }: the ability's range if attacking with one, else the weapon's.
+function getRange(character, ability) {
+  if (ability && ability.range != null) return parseRange(ability.range);
   const w = getWeaponStats(character);
-  return Math.max(1, num(w.range) || 1);
+  return parseRange(w.range != null ? w.range : 1);
+}
+
+// Legacy single-number reach (the farthest tile reachable) — used for "is anything attackable" UI.
+function getAttackRange(character, ability) {
+  return Math.max(1, getRange(character, ability).max);
 }
 
 function manhattan(a, b) {
   return Math.abs(a.r - b.r) + Math.abs(a.c - b.c);
 }
 
+// Distance for attack/counter purposes: Manhattan steps + 1 when crossing a height boundary
+// (a high-ground tile sits one step "further" from a normal tile, so an adjacent high-vs-normal
+// pair reads as distance 2 and needs a move that reaches 2).
+function combatDistance(aPos, dPos, aTile, dTile) {
+  const base = manhattan(aPos, dPos);
+  const hgA = !!(aTile && aTile.hg), hgD = !!(dTile && dTile.hg);
+  return base + (hgA !== hgD ? 1 : 0);
+}
+
+// Can a unit with reach { min, max } hit a target at effective distance `dist`?
+function withinRange(rangeObj, dist) {
+  return dist >= rangeObj.min && dist <= rangeObj.max;
+}
+
+// Convenience: can `from` (on aTile) attack `to` (on dTile) with reach `rangeObj`?
+function inAttackRange(aPos, dPos, aTile, dTile, rangeObj) {
+  if (!aPos || !dPos) return false;
+  return withinRange(rangeObj, combatDistance(aPos, dPos, aTile, dTile));
+}
+
+// Legacy Manhattan-only range check (no terrain). Kept for callers that don't have tiles.
 function inRange(fromPos, toPos, range) {
   if (!fromPos || !toPos) return false;
   const d = manhattan(fromPos, toPos);
@@ -234,7 +273,7 @@ function resolveExchange(attacker, defender, abilityName, defenderCanCounter, at
   // Blinding halves an afflicted unit's accuracy on its own strikes (attacker or defender).
   if (statusActive(attacker, "blinded")) atk = { ...atk, accuracy: Math.round(atk.accuracy * 0.5) };
   if (statusActive(defender, "blinded")) def = { ...def, accuracy: Math.round(def.accuracy * 0.5) };
-  // Slowing removes an afflicted unit's second strike (its A2 / D2).
+  // Slowing cancels an afflicted unit's BONUS second strike (its agility/Brave A2, or its D2).
   const attackerSlowed = statusActive(attacker, "slowed");
   const defenderSlowed = statusActive(defender, "slowed");
 
@@ -274,31 +313,39 @@ function resolveExchange(attacker, defender, abilityName, defenderCanCounter, at
     return atkHp > 0;
   };
 
-  if (isBrave) {
-    // Brave: A1 -> A2 (consecutive), then the defender's counters D1 -> D2.
-    if (!doAtk("A1").alive) return finish();
-    if (!attackerSlowed && !doAtk("A2").alive) return finish(); // slowed attacker forfeits A2
-    if (defenderCanCounter) {
-      if (!doDef("D1")) return finish();
-      if (!defenderSlowed) doDef("D2"); // slowed defender forfeits its second counter
-    }
+  // Default exchange is ONE strike each (A1, D1). A unit earns a bonus second strike if it has the
+  // Agility edge — its agility at least AGI_EDGE higher than the opponent's — and Slowing cancels
+  // that bonus. Brave guarantees the attacker's two strikes land BEFORE the counter.
+  const AGI_EDGE = 4;
+  const attackerEdge = atk.agility >= def.agility + AGI_EDGE;
+  const defenderEdge = def.agility >= atk.agility + AGI_EDGE;
+  const attackerDouble = (isBrave || attackerEdge) && !attackerSlowed;
+  const defenderDouble = defenderEdge && !defenderSlowed; // a defender only doubles via the agility edge
+  const braveFirst = isBrave && attackerDouble;           // attacker's 2nd strike comes before the counter
+
+  // Defender counter that respects range/injury (defenderCanCounter) and Maiming (a landed attacker
+  // strike cancels the counter). Returns false only if the counter killed the attacker.
+  const tryDef = (label) => {
+    if (!defenderCanCounter) return true;
+    if (isMaiming && attackerLanded) return true; // maimed → counter cancelled
+    return doDef(label);
+  };
+
+  // A1 — always.
+  if (!doAtk("A1").alive) return finish();
+
+  if (braveFirst) {
+    // Brave: A1, A2 (consecutive), THEN the defender's counter(s).
+    if (!doAtk("A2").alive) return finish();
+    if (!tryDef("D1")) return finish();
+    if (defenderDouble) tryDef("D2");
     return finish();
   }
 
-  // A1
-  const a1 = doAtk("A1");
-  if (!a1.alive) return finish();
-  // D1 — skipped if Maiming and A1 connected
-  if (defenderCanCounter && !(isMaiming && a1.landed)) { if (!doDef("D1")) return finish(); }
-  // A2 — a slowed attacker forfeits ONLY its own second strike; the defender still gets its second counter.
-  let a2Landed = false;
-  if (!attackerSlowed) {
-    const a2 = doAtk("A2");
-    if (!a2.alive) return finish();
-    a2Landed = a2.landed;
-  }
-  // D2 — skipped if the defender is slowed, or Maiming cancelled it (only possible when A2 actually landed).
-  if (defenderCanCounter && !defenderSlowed && !(isMaiming && a2Landed)) { doDef("D2"); }
+  // Standard order: A1, D1, then whichever side earned a bonus strike.
+  if (!tryDef("D1")) return finish();
+  if (attackerDouble) { if (!doAtk("A2").alive) return finish(); }
+  if (defenderDouble) tryDef("D2");
   return finish();
 
   function finish() {
@@ -340,8 +387,13 @@ module.exports = {
   resolveAoE,
   getMoveValue,
   findAbility,
+  parseRange,
+  getRange,
   getAttackRange,
   manhattan,
+  combatDistance,
+  withinRange,
+  inAttackRange,
   inRange,
   stepAllowed,
   reachable,

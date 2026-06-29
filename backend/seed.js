@@ -27,28 +27,75 @@ const store = require("./db");
 const bcrypt = require("bcryptjs");
 const combat = require("./combat");
 
-// All-tank statline: health 38, everything else at the 4 floor (sums to the 70 cap).
-const TANK = { health: 38, strength: 4, defense: 4, magick: 4, resistance: 4, speed: 4, skill: 4, knowledge: 4, luck: 4 };
-const mkStats = () => ({ ...TANK });
+// Test-dummy statline: a big fixed 200 HP so nobody dies fast, with every OTHER stat rolled
+// randomly (4–12) per character — a varied spread so abilities, agility double-attacks, damage,
+// etc. all get exercised across the roster. (Re-seed to reshuffle.)
+const r = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
+const mkStats = () => ({
+  health: 200,
+  strength: r(4, 12),
+  defense: r(4, 12),
+  magick: r(4, 12),
+  resistance: r(4, 12),
+  speed: r(4, 12),
+  skill: r(4, 12),
+  knowledge: r(4, 12),
+  luck: r(4, 12),
+});
 
 // Team A — Crimson Host (red). Valid size composition: 1×1, 2×2, 2×3, 1×4.
 const rosterA = [
-  { name: "Pyromancer", type: "mage", size: 2, base_weapon: "fire", abilities: ["Scorch", "Eruption"], specials: ["Bolster", "Ignite", "Wall Of Flame"] }, // Burning, Radial
-  { name: "Cryomancer", type: "mage", size: 2, base_weapon: "water", abilities: ["Ice Spear", "Dive"], specials: ["High Tide", "Liquify", "Hail"] },        // Freezing, Obscuring
-  { name: "Geomancer", type: "mage", size: 3, base_weapon: "earth", abilities: ["Crush", "Aegis"], specials: ["Stalagmite", "Stone Skin", "Weigh Down"] },  // Crushing, Damage
-  { name: "Reaver", type: "melee", size: 4, base_weapon: "axe", abilities: ["Dismember", "Bludgeon"] },                                                     // Maiming, Injuring
-  { name: "Trapper", type: "melee", size: 1, base_weapon: "dagger", abilities: ["Stagnate", "Pin"] },                                                       // Slowing, Immobilizing
-  { name: "Silencer", type: "melee", size: 3, base_weapon: "bow", abilities: ["Tome Breaker", "Explosive Volley"] },                                        // Silencing, Meteor
+  {
+    name: "Pyromancer",
+    type: "mage",
+    size: 2,
+    base_weapon: "fire",
+    abilities: ["Scorch", "Eruption"],
+    specials: ["Bolster", "Ignite", "Wall Of Flame"],
+  }, // Burning, Radial
+  {
+    name: "Cryomancer",
+    type: "mage",
+    size: 2,
+    base_weapon: "water",
+    abilities: ["Ice Spear", "Dive"],
+    specials: ["High Tide", "Liquify", "Hail"],
+  }, // Freezing, Obscuring
+  {
+    name: "Geomancer",
+    type: "mage",
+    size: 3,
+    base_weapon: "earth",
+    abilities: ["Crush", "Aegis"],
+    specials: ["Stalagmite", "Stone Skin", "Weigh Down"],
+  }, // Crushing, Damage
+  { name: "Reaver", type: "melee", size: 4, base_weapon: "axe", abilities: ["Dismember", "Bludgeon"] }, // Maiming, Injuring
+  { name: "Trapper", type: "melee", size: 1, base_weapon: "dagger", abilities: ["Stagnate", "Pin"] }, // Slowing, Immobilizing
+  { name: "Silencer", type: "melee", size: 3, base_weapon: "bow", abilities: ["Tome Breaker", "Explosive Volley"] }, // Silencing, Meteor
 ];
 
 // Team B — Azure Guard (blue). Valid size composition: 1×1, 2×2, 2×3, 1×4.
 const rosterB = [
-  { name: "Stormcaller", type: "mage", size: 2, base_weapon: "lightning", abilities: ["Thunder", "Static spd"], specials: ["Kinesia", "Haste", "Charge"] }, // Shocking, Brave
-  { name: "Druid", type: "mage", size: 2, base_weapon: "grass", abilities: ["Leech Life", "Pin Needle"], specials: ["Blossom", "Absorb", "Thistle"] },       // Absorption, Poisoning
-  { name: "Breacher", type: "melee", size: 4, base_weapon: "axe", abilities: ["Armor Cleaver", "Breaker"] },                                                 // Piercing, Efficiency
-  { name: "Blinder", type: "melee", size: 3, base_weapon: "sword", abilities: ["Gouge", "Sword Dance"] },                                                    // Blinding, Damage
-  { name: "Pikeman", type: "melee", size: 3, base_weapon: "lance", abilities: ["Javelin", "Spear Sweep"] },                                                  // Damage, Radial
-  { name: "Brawler", type: "melee", size: 1, base_weapon: "gauntlets", abilities: ["Disarm", "Vault"] },                                                     // Damage, Radial
+  {
+    name: "Stormcaller",
+    type: "mage",
+    size: 2,
+    base_weapon: "lightning",
+    abilities: ["Thunder", "Static spd"],
+    specials: ["Kinesia", "Haste", "Charge"],
+  }, // Shocking, Brave
+  {
+    name: "Druid",
+    type: "mage",
+    size: 2,
+    base_weapon: "grass",
+    abilities: ["Leech Life", "Pin Needle"],
+    specials: ["Blossom", "Absorb", "Thistle"],
+  }, // Absorption, Poisoning
+  { name: "Breacher", type: "melee", size: 4, base_weapon: "axe", abilities: ["Armor Cleaver", "Breaker"] }, // Piercing, Efficiency
+  { name: "Blinder", type: "melee", size: 3, base_weapon: "sword", abilities: ["Gouge", "Sword Dance"] }, // Blinding, Damage
+  { name: "Pikeman", type: "melee", size: 3, base_weapon: "lance", abilities: ["Javelin", "Spear Sweep"] }, // Damage, Radial
+  { name: "Brawler", type: "melee", size: 1, base_weapon: "gauntlets", abilities: ["Disarm", "Vault"] }, // Damage, Radial
 ];
 
 function buildRow(teamId, c) {
@@ -62,14 +109,24 @@ function buildRow(teamId, c) {
     move_value: combat.getMoveValue({ type: c.type, base_weapon: c.base_weapon }),
     abilities: JSON.stringify(c.abilities),
     specials: JSON.stringify(c.type === "mage" ? c.specials || [] : []),
-    health: stats.health, strength: stats.strength, defense: stats.defense, magick: stats.magick,
-    resistance: stats.resistance, speed: stats.speed, skill: stats.skill, knowledge: stats.knowledge, luck: stats.luck,
+    health: stats.health,
+    strength: stats.strength,
+    defense: stats.defense,
+    magick: stats.magick,
+    resistance: stats.resistance,
+    speed: stats.speed,
+    skill: stats.skill,
+    knowledge: stats.knowledge,
+    luck: stats.luck,
   };
 }
 
 async function ensureUser(username, password) {
   let u = await store.getUserByName(username);
-  if (u) { console.log(`• user "${username}" already exists (id ${u.id})`); return u; }
+  if (u) {
+    console.log(`• user "${username}" already exists (id ${u.id})`);
+    return u;
+  }
   const hash = await bcrypt.hash(password, 10);
   u = await store.createUser(username, hash);
   console.log(`✓ created user "${username}" (id ${u.id})`);
@@ -101,4 +158,7 @@ async function ensureTeam(userId, name, roster) {
   console.log("\nSeed complete. Log in as  red/pw  (Crimson Host)  or  blue/pw  (Azure Guard).");
   console.log("Between the two teams, every one of the 19 attack types is represented for testing.");
   process.exit(0);
-})().catch((e) => { console.error("Seed failed:", e.message); process.exit(1); });
+})().catch((e) => {
+  console.error("Seed failed:", e.message);
+  process.exit(1);
+});

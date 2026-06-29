@@ -38,16 +38,16 @@ assert.ok(combat.inRange({ r: 0, c: 0 }, { r: 0, c: 1 }, 1), "orthogonal adjacen
 
 const n = { t: "normal", hg: false }; // neutral tile (no terrain effect)
 
-// 5. Exchange order A1,D1,A2,D2 when both survive and can counter.
+// 5. DEFAULT exchange is ONE strike each (A1, D1) when agility is even — no bonus second strikes.
 const atk = mk({ id: 1, health: 100, defense: 0, resistance: 0 });
 const def = mk({ id: 2, health: 100, defense: 0, resistance: 0 });
 const r = combat.resolveExchange(atk, def, null, true, n, n, alwaysLow);
 const steps = r.events.map((e) => e.step);
-assert.deepStrictEqual(steps, ["A1", "D1", "A2", "D2"], `expected A1,D1,A2,D2 got ${steps}`);
+assert.deepStrictEqual(steps, ["A1", "D1"], `even agility -> A1,D1; got ${steps}`);
 
-// 6. No counter when defenderCanCounter=false -> only A1, A2.
+// 6. No counter when defenderCanCounter=false -> just A1 (no bonus strike at even agility).
 const r2 = combat.resolveExchange(atk, def, null, false, n, n, alwaysLow);
-assert.deepStrictEqual(r2.events.map((e) => e.step), ["A1", "A2"]);
+assert.deepStrictEqual(r2.events.map((e) => e.step), ["A1"]);
 
 // 7. Always-high rng -> all misses, no damage.
 const r3 = combat.resolveExchange(atk, def, null, true, n, n, alwaysHigh);
@@ -85,13 +85,13 @@ assert.strictEqual(bothHigh.accuracy, base.accuracy, "both high -> no relative a
 const fortHigh = combat.applyTerrain(base, { t: "fort", hg: true }, { t: "normal", hg: false });
 assert.strictEqual(fortHigh.accuracy, Math.round(base.accuracy * 1.1 * 1.15), "fort+highground acc stacks");
 
-// 12. Maiming: a landed attacker strike cancels the matching counter (A1->no D1, A2->no D2).
+// 12. Maiming: a landed attacker strike cancels the defender's counter (even agility -> A1, D1 default).
 const maimer = mk({ id: 1, base_weapon: "axe", abilities: ["Dismember", "Tomahawk"], health: 1000, strength: 8, defense: 0, resistance: 0, luck: 0 });
 const victim = mk({ id: 2, base_weapon: "sword", abilities: ["Sword Dance", "Evasion"], health: 1000, strength: 8, defense: 0, resistance: 0, luck: 0 });
 const rMaim = combat.resolveExchange(maimer, victim, "Dismember", true, n, n, alwaysLow);
-assert.deepStrictEqual(rMaim.events.map((e) => e.step), ["A1", "A2"], "Maiming cancels both counters when both attacks land");
-const rDmg = combat.resolveExchange(maimer, victim, "Tomahawk", true, n, n, alwaysLow); // Damage type -> counters happen
-assert.deepStrictEqual(rDmg.events.map((e) => e.step), ["A1", "D1", "A2", "D2"], "non-Maiming attack keeps counters");
+assert.deepStrictEqual(rMaim.events.map((e) => e.step), ["A1"], "Maiming cancels the counter when the attack lands");
+const rDmg = combat.resolveExchange(maimer, victim, "Tomahawk", true, n, n, alwaysLow); // Damage type -> counter happens
+assert.deepStrictEqual(rDmg.events.map((e) => e.step), ["A1", "D1"], "non-Maiming attack keeps the counter");
 
 // 13. Obscuring: once the attacker lands, the defender's counters get accuracy x0.5 -> fewer land.
 function mulberry32(a) { return function () { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
@@ -122,12 +122,12 @@ assert.strictEqual(rPierce.events[0].damage, pierceStats.power, `piercing A1 sho
 const rNormalP = combat.resolveExchange(piercer, pierceTgt, "Tomahawk", false, n, n, mid);
 assert.ok(rNormalP.events[0].damage < pierceStats.power, "non-piercing attack is reduced by protection");
 
-// 15. Brave: both attacker strikes land before the defender counters (A1,A2,D1,D2).
-const braveA = mk({ id: 1, base_weapon: "dagger", abilities: ["Blitz", "Puncture"], health: 1000, strength: 8, defense: 0, resistance: 0 });
-const braveD = mk({ id: 2, base_weapon: "sword", abilities: ["Sword Dance", "Evasion"], health: 1000, strength: 8, defense: 0, resistance: 0 });
+// 15. Brave: the attacker's two strikes land before the (single) counter -> A1, A2, D1.
+const braveA = mk({ id: 1, base_weapon: "dagger", abilities: ["Blitz", "Puncture"], health: 1000, strength: 8, defense: 0, resistance: 0, speed: 4 });
+const braveD = mk({ id: 2, base_weapon: "sword", abilities: ["Sword Dance", "Evasion"], health: 1000, strength: 8, defense: 0, resistance: 0, speed: 6 });
 const rBrave = combat.resolveExchange(braveA, braveD, "Blitz", true, n, n, alwaysLow);
-assert.deepStrictEqual(rBrave.events.map((e) => e.step), ["A1", "A2", "D1", "D2"], "Brave front-loads both attacker strikes");
-assert.deepStrictEqual(rBrave.events.map((e) => e.by), ["attacker", "attacker", "defender", "defender"], "Brave order: attacker, attacker, defender, defender");
+assert.deepStrictEqual(rBrave.events.map((e) => e.step), ["A1", "A2", "D1"], "Brave front-loads both attacker strikes, then one counter");
+assert.deepStrictEqual(rBrave.events.map((e) => e.by), ["attacker", "attacker", "defender"], "Brave order: attacker, attacker, defender");
 
 // 16. Absorption: attacker heals 50% (floored) of damage dealt, capped at maxHealth.
 const leecher = mk({ id: 1, base_weapon: "grass", type: "mage", abilities: ["Leech Life"], magick: 10, health: 100, maxHealth: 100 });
@@ -143,17 +143,16 @@ const fullLeech = mk({ id: 1, base_weapon: "dark", type: "mage", abilities: ["Le
 const rCap = combat.resolveExchange(fullLeech, leechTgt, "Leech Life", false, n, n, alwaysLow);
 assert.strictEqual(rCap.attackerHp, 100, "absorption never heals past maxHealth");
 
-// 17. Slowing: a slowed attacker forfeits its second strike (A2); a slowed defender forfeits D2.
-const slowAtk = mk({ id: 1, base_weapon: "sword", abilities: ["Sword Dance", "Evasion"], health: 1000, strength: 8, defense: 0, resistance: 0, statuses: [{ type: "slowed", turnsLeft: 1 }] });
-const slowFoe = mk({ id: 2, base_weapon: "sword", abilities: ["Sword Dance", "Evasion"], health: 1000, strength: 8, defense: 0, resistance: 0 });
-const rSlowA = combat.resolveExchange(slowAtk, slowFoe, null, true, n, n, alwaysLow);
-assert.deepStrictEqual(rSlowA.events.map((e) => e.step), ["A1", "D1", "D2"], "slowed attacker forfeits A2 only — the (un-slowed) defender still gets both counters");
-const rSlowD = combat.resolveExchange(slowFoe, slowAtk, null, true, n, n, alwaysLow); // now the slowed unit defends
-assert.deepStrictEqual(rSlowD.events.map((e) => e.step), ["A1", "D1", "A2"], "slowed defender forfeits its D2 counter only");
-// Both slowed: each forfeits its second strike -> A1, D1.
-const slowBoth = mk({ id: 3, base_weapon: "sword", abilities: ["Sword Dance", "Evasion"], health: 1000, strength: 8, defense: 0, resistance: 0, statuses: [{ type: "slowed", turnsLeft: 1 }] });
-const rBoth = combat.resolveExchange(slowAtk, slowBoth, null, true, n, n, alwaysLow);
-assert.deepStrictEqual(rBoth.events.map((e) => e.step), ["A1", "D1"], "both slowed -> one strike each");
+// 17. Agility edge grants a bonus strike (≥4 higher); Slowing cancels that bonus.
+//     fast dagger (spd 8 -> agi ~12) vs slow sword (spd 4 -> agi 4): a clear ≥4 edge.
+const fast = mk({ id: 1, base_weapon: "dagger", abilities: ["Throwing Knives"], health: 1000, strength: 8, defense: 0, resistance: 0, speed: 8 });
+const slowU = mk({ id: 2, base_weapon: "sword", abilities: ["Sword Dance"], health: 1000, strength: 8, defense: 0, resistance: 0, speed: 4 });
+assert.deepStrictEqual(combat.resolveExchange(fast, slowU, null, true, n, n, alwaysLow).events.map((e) => e.step), ["A1", "D1", "A2"], "agility-edge ATTACKER earns a 2nd strike (A1,D1,A2)");
+assert.deepStrictEqual(combat.resolveExchange(slowU, fast, null, true, n, n, alwaysLow).events.map((e) => e.step), ["A1", "D1", "D2"], "agility-edge DEFENDER earns a 2nd counter (A1,D1,D2)");
+const fastSlowed = mk({ id: 1, base_weapon: "dagger", abilities: ["Throwing Knives"], health: 1000, strength: 8, defense: 0, resistance: 0, speed: 8, statuses: [{ type: "slowed", turnsLeft: 1 }] });
+assert.deepStrictEqual(combat.resolveExchange(fastSlowed, slowU, null, true, n, n, alwaysLow).events.map((e) => e.step), ["A1", "D1"], "Slowing cancels the attacker's agility bonus strike");
+const fastDefSlowed = mk({ id: 2, base_weapon: "dagger", abilities: ["Throwing Knives"], health: 1000, strength: 8, defense: 0, resistance: 0, speed: 8, statuses: [{ type: "slowed", turnsLeft: 1 }] });
+assert.deepStrictEqual(combat.resolveExchange(slowU, fastDefSlowed, null, true, n, n, alwaysLow).events.map((e) => e.step), ["A1", "D1"], "Slowing cancels the defender's agility bonus counter");
 
 // 18. Blinding: a blinded unit's accuracy is halved, so it lands fewer attacker hits over many trials.
 function atkLandings(blinded, trials) {
@@ -183,5 +182,29 @@ assert.ok(aoe.events.every((e) => e.targetId != null && e.by === undefined), "Ao
 const full = aoe.events[0].damage, splash = aoe.events[1].damage;
 assert.ok(full > 0, "primary takes full damage");
 assert.strictEqual(splash, Math.floor(full * (1 / 3)), `meteor splash = floor(1/3 full): expected ${Math.floor(full / 3)}, got ${splash}`);
+
+// 20. Range as min-max, height-aware distance, and counter eligibility.
+assert.deepStrictEqual(combat.parseRange(2), { min: 2, max: 2 }, "number 2 = exactly 2");
+assert.deepStrictEqual(combat.parseRange("1-2"), { min: 1, max: 2 }, "'1-2' = 1..2");
+assert.deepStrictEqual(combat.parseRange("2-4"), { min: 2, max: 4 }, "'2-4' = 2..4");
+const N0 = { t: "normal", hg: false }, HG = { t: "normal", hg: true };
+// Bow default = exactly 2: can't hit an adjacent foe, can hit at 2.
+const bowRange = combat.getRange(mk({ base_weapon: "bow", abilities: ["Snipe", "Deadeye"] }), null);
+assert.deepStrictEqual(bowRange, { min: 2, max: 2 }, "bow default = exactly 2");
+assert.ok(!combat.inAttackRange({ r: 0, c: 0 }, { r: 0, c: 1 }, N0, N0, bowRange), "bow can't hit 1 tile away");
+assert.ok(combat.inAttackRange({ r: 0, c: 0 }, { r: 0, c: 2 }, N0, N0, bowRange), "bow hits at 2 tiles");
+// High ground adds +1 to distance.
+assert.strictEqual(combat.combatDistance({ r: 0, c: 0 }, { r: 0, c: 1 }, HG, N0), 2, "adjacent high-vs-normal = distance 2");
+assert.strictEqual(combat.combatDistance({ r: 0, c: 0 }, { r: 0, c: 1 }, N0, N0), 1, "adjacent same height = distance 1");
+// Sword (range 1) on normal can't reach an adjacent foe on high ground (effective distance 2).
+const swordRange = combat.getRange(mk({ base_weapon: "sword", abilities: ["Sword Dance"] }), null);
+assert.ok(!combat.inAttackRange({ r: 0, c: 0 }, { r: 0, c: 1 }, N0, HG, swordRange), "sword can't reach an adjacent high-ground foe");
+// A "1-2" mage move CAN reach that high-ground foe (effective distance 2 is within 1-2).
+const fireMage = mk({ base_weapon: "fire", type: "mage" });
+const scorchRange = combat.getRange(fireMage, combat.findAbility(fireMage, "Scorch"));
+assert.deepStrictEqual(scorchRange, { min: 1, max: 2 }, "Scorch = 1-2 (synced from frontend)");
+assert.ok(combat.inAttackRange({ r: 0, c: 0 }, { r: 0, c: 1 }, N0, HG, scorchRange), "a 1-2 mage move reaches the adjacent high-ground foe");
+// Counter eligibility: a sword can't counter a bow attacking from 2 tiles away.
+assert.ok(!combat.inAttackRange({ r: 0, c: 2 }, { r: 0, c: 0 }, N0, N0, swordRange), "sword (range 1) can't counter across 2 tiles");
 
 console.log("All combat sanity checks passed ✓");

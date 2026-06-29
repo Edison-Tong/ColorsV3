@@ -21,17 +21,22 @@ import {
   computeAllStats,
   getMoveValue,
   getAttackRange,
+  getRange,
+  parseRange,
+  combatDistance,
+  withinRange,
   findAbility,
   manhattan,
   inRange,
   previewStrike,
+  previewExchange,
   reachable,
   TERRAIN_FX,
   RADIAL_TARGETS,
 } from "../logic/combat";
 
 const CELL = 46; // fixed tile size; the board scrolls when bigger than the screen
-const { width: SCREEN_W } = Dimensions.get("window");
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
 
 // Active-status labels (shown in the unit panel / inspect popup).
 const STATUS_LABEL = {
@@ -59,7 +64,7 @@ const TYPE_INFO = {
   Meteor: { label: "Meteor", desc: "Ranged; ⅓ splash to adjacent enemies", done: true },
   Piercing: { label: "Piercing", desc: "Ignores the target's protection", done: true },
   Efficiency: { label: "Efficiency", desc: "×1.3 to a stat vs certain units", done: false },
-  Brave: { label: "Brave", desc: "Two strikes before they counter", done: true },
+  Brave: { label: "Brave", desc: "Both your strikes land before they counter", done: true },
   Absorption: { label: "Absorption", desc: "Heals you 50% of damage dealt", done: true },
   Burning: { label: "Burning", desc: "Inflicts Burn (−12.5% HP/turn, 2 turns)", done: true },
   Poisoning: { label: "Poisoning", desc: "Inflicts Poison (−12.5% HP/turn, 2 turns)", done: true },
@@ -67,7 +72,7 @@ const TYPE_INFO = {
   Crushing: { label: "Crushing", desc: "Inflicts Crush (−12.5% HP/turn, 2 turns)", done: true },
   Shocking: { label: "Shocking", desc: "Inflicts Shock (−12.5% HP/turn, 2 turns)", done: true },
   Silencing: { label: "Silencing", desc: "Silences — no abilities next turn", done: true },
-  Slowing: { label: "Slowing", desc: "Slows — no second strike next turn", done: true },
+  Slowing: { label: "Slowing", desc: "Cancels its bonus 2nd strike next turn", done: true },
   Blinding: { label: "Blinding", desc: "Blinds — accuracy halved next turn", done: true },
   Immobilizing: { label: "Immobilizing", desc: "Immobilizes — can't move next turn", done: true },
 };
@@ -104,8 +109,12 @@ export default function BattleScreen({ route, navigation }) {
     cols = state.cols;
   const cell = CELL;
 
-  const amHost = state.hostId === userId;
-  const myTurn = state.turnUserId === userId && !state.over;
+  // Sandbox (solo-test) mode: one client controls BOTH teams, so "the side I control" is whichever
+  // side's turn it is. Board orientation stays fixed (host view) so it doesn't flip each turn.
+  const sandbox = !!state.sandbox;
+  const controlSide = sandbox ? state.turnUserId : userId;
+  const amHost = sandbox ? true : state.hostId === userId;
+  const myTurn = state.turnUserId === controlSide && !state.over;
   const fromView = (p) => (amHost ? p : { r: rows - 1 - p.r, c: cols - 1 - p.c });
   const cellAt = (r, c) => (terrain[r] && terrain[r][c]) || { t: "normal", hg: false, stairs: false };
 
@@ -178,15 +187,19 @@ export default function BattleScreen({ route, navigation }) {
   const selected = selectedId ? units[selectedId] : null;
   const selPos = selectedId ? positions[selectedId] : null;
   const selAlive = selected && selected.alive;
-  const isMine = selected && selected.ownerId === userId;
-  const moveLeft = selected ? (state.moveRemaining?.[selectedId] ?? getMoveValue(selected)) : 0;
+  const isMine = selected && selected.ownerId === controlSide;
+  const hasMoved = selectedId ? !!state.moved?.[selectedId] : false;
   const hasActed = selectedId ? !!state.acted?.[selectedId] : false;
   const selStatuses = selected?.statuses || [];
   const isImmobilized = selStatuses.some((s) => s.type === "immobilized");
   const isSilenced = selStatuses.some((s) => s.type === "silenced");
+  // Undo is a global LIFO: pop the most recent move (server-tracked), blocked once an attack is on top.
+  const canUndo = myTurn && !state.over && !!state.canUndo;
+  const lastMoveName = state.lastMoveId != null ? units[state.lastMoveId]?.name : null;
 
   const moveCells = useMemo(() => {
-    if (!selAlive || !selPos || !myTurn || casting || moveLeft <= 0 || isImmobilized) return new Set();
+    // One move per turn: no move cells once the unit has moved (or is immobilized / aiming a special).
+    if (!selAlive || !selPos || !myTurn || casting || hasMoved || isImmobilized) return new Set();
     const occupied = new Set(
       Object.entries(positions)
         .filter(([id]) => Number(id) !== Number(selectedId))
@@ -194,42 +207,43 @@ export default function BattleScreen({ route, navigation }) {
     );
     return reachable(
       selPos,
-      moveLeft,
+      getMoveValue(selected),
       (r, c) => cellAt(r, c),
       (r, c) => occupied.has(`${r}:${c}`),
       rows,
       cols
     ).cells;
-  }, [selAlive, selPos, myTurn, casting, moveLeft, positions, rows, cols, selectedId, isImmobilized]);
+  }, [selAlive, selPos, myTurn, casting, hasMoved, positions, rows, cols, selectedId, isImmobilized, selected]);
 
-  const maxRange = useMemo(() => {
-    if (!selected) return 1;
-    const ranges = [
-      getAttackRange(selected, null),
-      ...(selected.abilities || []).map((n) => getAttackRange(selected, findAbility(selected, n))),
-    ];
-    return Math.max(...ranges);
-  }, [selected]);
+  // Can the selected unit hit something at effective distance `dist` with its basic attack or any ability?
+  const canAttackAt = (unit, dist) =>
+    withinRange(getRange(unit, null), dist) ||
+    (unit.abilities || []).some((n) => withinRange(getRange(unit, findAbility(unit, n)), dist));
 
-  // Enemies attackable with a weapon/ability (only when NOT aiming a special).
+  // Enemies attackable with a weapon/ability (only when NOT aiming a special). Height-aware distance,
+  // and each move's own min-max reach (e.g. a bow can't hit an adjacent foe).
   const targetableIds = useMemo(() => {
     if (!selAlive || !selPos || !myTurn || hasActed || casting) return new Set();
     const out = new Set();
     for (const [id, u] of Object.entries(units)) {
-      if (u.ownerId === userId || !u.alive) continue;
-      if (inRange(selPos, positions[id], maxRange)) out.add(Number(id));
+      if (u.ownerId === controlSide || !u.alive || !positions[id]) continue;
+      const p = positions[id];
+      const dist = combatDistance(selPos, p, cellAt(selPos.r, selPos.c), cellAt(p.r, p.c));
+      if (dist > 0 && canAttackAt(selected, dist)) out.add(Number(id));
     }
     return out;
-  }, [selAlive, selPos, myTurn, hasActed, casting, units, positions, maxRange, userId]);
+  }, [selAlive, selPos, myTurn, hasActed, casting, units, positions, controlSide, selected]);
 
-  // Units a special can be cast on: self + any alive unit within the special's range.
+  // Units a special can be cast on: self + any alive unit within the special's (min-max) range.
   const castTargets = useMemo(() => {
     if (!casting || !selAlive || !selPos || !myTurn) return new Set();
-    const range = Math.max(1, Number(casting.range) || 1);
+    const r = parseRange(casting.range);
     const out = new Set([Number(selectedId)]); // self always allowed
     for (const [id, u] of Object.entries(units)) {
-      if (!u.alive) continue;
-      if (inRange(selPos, positions[id], range)) out.add(Number(id));
+      if (!u.alive || !positions[id]) continue;
+      const p = positions[id];
+      const dist = combatDistance(selPos, p, cellAt(selPos.r, selPos.c), cellAt(p.r, p.c));
+      if (dist === 0 || withinRange(r, dist)) out.add(Number(id));
     }
     return out;
   }, [casting, selAlive, selPos, myTurn, units, positions, selectedId]);
@@ -254,7 +268,7 @@ export default function BattleScreen({ route, navigation }) {
     }
     if (occId != null) {
       const u = units[occId];
-      if (u.ownerId === userId) {
+      if (u.ownerId === controlSide) {
         if (u.alive) setSelectedId(occId);
         return;
       }
@@ -282,6 +296,11 @@ export default function BattleScreen({ route, navigation }) {
       if (res?.error) Alert.alert("Error", res.error);
     });
   };
+  const undoMove = () => {
+    socket.emit("undoMove", { code }, (res) => {
+      if (res?.error) Alert.alert("Can't undo", res.error);
+    });
+  };
   const leave = () => {
     socket.emit("leaveRoom");
     navigation.popToTop();
@@ -303,7 +322,13 @@ export default function BattleScreen({ route, navigation }) {
           <Text style={styles.leave}>‹ Leave</Text>
         </TouchableOpacity>
         <Text style={[styles.turn, { color: state.over ? theme.warn : myTurn ? theme.good : theme.textDim }]}>
-          {state.over ? "Game over" : myTurn ? "🟢 Your turn" : "⏳ Opponent's turn"}
+          {state.over
+            ? "Game over"
+            : sandbox
+            ? `🧪 ${controlSide === state.hostId ? "🔴 Red" : "🔵 Blue"}'s turn`
+            : myTurn
+            ? "🟢 Your turn"
+            : "⏳ Opponent's turn"}
         </Text>
         <Text style={styles.code}>#{code}</Text>
       </View>
@@ -318,7 +343,7 @@ export default function BattleScreen({ route, navigation }) {
         <View style={styles.tickBanner}>
           {tickInfo.map((t, i) => {
             const u = units[t.unitId] || {};
-            const mine = u.ownerId === userId;
+            const mine = u.ownerId === controlSide;
             return (
               <Text key={i} style={[styles.tickText, { color: mine ? theme.mine : theme.enemy }]}>
                 {DOT_GLYPH[t.type] || "☠️"} {u.name || "Unit"} took {t.damage} ({STATUS_LABEL[t.type]?.split(" ")[1] || t.type})
@@ -358,7 +383,7 @@ export default function BattleScreen({ route, navigation }) {
                 {row.map((abs, vc) => {
                   const occId = occupantAt(positions, abs);
                   const u = occId != null ? units[occId] : null;
-                  const mine = u && u.ownerId === userId;
+                  const mine = u && u.ownerId === controlSide;
                   const isSelected = occId === selectedId;
                   const isMove = moveCells.has(`${abs.r}:${abs.c}`);
                   const isTarget = occId != null && targetableIds.has(occId);
@@ -449,6 +474,12 @@ export default function BattleScreen({ route, navigation }) {
         <Text style={styles.selectHint}>{myTurn ? "Tap a unit to act" : "Opponent's turn"}</Text>
       ) : null}
 
+      {canUndo && (
+        <TouchableOpacity style={styles.undoBtn} onPress={undoMove}>
+          <Text style={styles.undoText}>↩ Undo last move{lastMoveName ? ` — ${lastMoveName}` : ""}</Text>
+        </TouchableOpacity>
+      )}
+
       <View style={styles.bottomBar}>
         <TouchableOpacity style={styles.legendBtn} onPress={() => setLegendOpen(true)}>
           <Text style={styles.legendBtnText}>📖 Legend</Text>
@@ -477,32 +508,48 @@ export default function BattleScreen({ route, navigation }) {
                   tile={tileFor(tc.t)}
                   tileKey={tc.t}
                   high={tc.hg}
-                  mine={inspect.unit.ownerId === userId}
+                  mine={inspect.unit.ownerId === controlSide}
                 />
               );
             })()}
         </Pressable>
       </Modal>
 
-      {/* Attack chooser */}
-      <Modal visible={!!attackTarget} transparent animationType="slide" onRequestClose={() => setAttackTarget(null)}>
-        <View style={styles.backdrop}>
-          <Torn style={styles.sheet}>
-            {attackTarget && selected && (
-              <AttackChooser
-                attacker={selected}
-                target={attackTarget}
-                silenced={isSilenced}
-                dist={manhattan(selPos, positions[attackTarget.id] || selPos)}
-                atkTile={selPos ? cellAt(selPos.r, selPos.c) : null}
-                defTile={
-                  positions[attackTarget.id] ? cellAt(positions[attackTarget.id].r, positions[attackTarget.id].c) : null
-                }
-                onPick={doAttack}
-                onCancel={() => setAttackTarget(null)}
-              />
-            )}
-          </Torn>
+      {/* Attack chooser — centered, fixed-size modal; content scrolls inside if needed. */}
+      <Modal visible={!!attackTarget} transparent animationType="fade" onRequestClose={() => setAttackTarget(null)}>
+        <View style={styles.centerBackdrop}>
+          <View style={styles.attackCard}>
+            <View style={styles.attackInner}>
+              {attackTarget && selected && (
+                <AttackChooser
+                  attacker={selected}
+                  target={attackTarget}
+                  silenced={isSilenced}
+                  dist={combatDistance(
+                    selPos,
+                    positions[attackTarget.id] || selPos,
+                    selPos ? cellAt(selPos.r, selPos.c) : null,
+                    positions[attackTarget.id] ? cellAt(positions[attackTarget.id].r, positions[attackTarget.id].c) : null
+                  )}
+                  atkTile={selPos ? cellAt(selPos.r, selPos.c) : null}
+                  defTile={
+                    positions[attackTarget.id] ? cellAt(positions[attackTarget.id].r, positions[attackTarget.id].c) : null
+                  }
+                  defenderCanCounter={(() => {
+                    const aP = selPos, dP = positions[attackTarget.id];
+                    if (!aP || !dP) return false;
+                    const aT = cellAt(aP.r, aP.c), dT = cellAt(dP.r, dP.c);
+                    return (
+                      withinRange(getRange(attackTarget, null), combatDistance(dP, aP, dT, aT)) &&
+                      !(attackTarget.statuses || []).some((s) => s.type === "injured")
+                    );
+                  })()}
+                  onPick={doAttack}
+                  onCancel={() => setAttackTarget(null)}
+                />
+              )}
+            </View>
+          </View>
         </View>
       </Modal>
 
@@ -510,21 +557,21 @@ export default function BattleScreen({ route, navigation }) {
       <Modal visible={!!result} transparent animationType="fade" onRequestClose={() => setResult(null)}>
         <Pressable style={styles.resultBackdrop} onPress={() => setResult(null)}>
           {result && (result.aoe
-            ? <AoEResultCard result={result} units={units} userId={userId} />
-            : <ResultCard result={result} units={units} userId={userId} />)}
+            ? <AoEResultCard result={result} units={units} userId={controlSide} />
+            : <ResultCard result={result} units={units} userId={controlSide} />)}
         </Pressable>
       </Modal>
 
       {/* Cast result overlay */}
       <Modal visible={!!castResult} transparent animationType="fade" onRequestClose={() => setCastResult(null)}>
         <Pressable style={styles.resultBackdrop} onPress={() => setCastResult(null)}>
-          {castResult && <CastCard res={castResult} units={units} userId={userId} />}
+          {castResult && <CastCard res={castResult} units={units} userId={controlSide} />}
         </Pressable>
       </Modal>
 
       {/* Game over — big, animated, center screen. Rendered as an absolute overlay (NOT a
           Modal) so it can't conflict with the attack/cast result Modals. */}
-      {state.over && <GameOverOverlay win={state.winnerId === userId} onExit={leave} />}
+      {state.over && <GameOverOverlay win={sandbox ? true : state.winnerId === userId} onExit={leave} />}
     </View>
   );
 }
@@ -641,7 +688,7 @@ function InspectCard({ u, tile, tileKey, high, mine }) {
         <Stat icon="🎯" label="Hit" v={s.hitBase} />
         <Stat icon="💨" label="Eva" v={s.evasion} />
         <Stat icon="✨" label="Crit" v={s.critical} />
-        <Stat icon="🧱" label="Blk" v={s.block} />
+        <Stat icon="🛡️" label="Blk" v={s.block} />
       </View>
       <View style={styles.statRow}>
         <Stat label="Str" v={u.strength} small />
@@ -736,7 +783,8 @@ function LegendModal({ visible, onClose }) {
             <Text style={styles.legendDesc}>
               Raised terrain (fort walls, some castles), marked with an "HG" badge. The unit on high ground gets 🎯 Acc
               ×1.15; a low‑ground foe it fights gets 🎯 Acc ×0.85 (only when one side is high). Stacks with the tile's
-              own terrain.
+              own terrain. It also counts as +1 distance — an adjacent foe at a different height is "2 tiles away," so
+              reaching across a height difference needs a move (and a counter) that reaches 2.
             </Text>
 
             <Text style={styles.legendSection}>𓊍 Stairways</Text>
@@ -758,7 +806,8 @@ function LegendModal({ visible, onClose }) {
               🎯 Accuracy — raises your hit chance AND lowers the enemy's block chance. Beats evasive and defensive units.{"\n"}
               💨 Evasion — your dodge; lowers the attacker's hit chance.{"\n"}
               ✨ Critical — crit chance vs the target's Luck; a crit deals ×1.5 damage.{"\n"}
-              🧱 Block — chance to fully negate a hit (vs the attacker's Accuracy).
+              🛡️ Block — chance to fully negate a hit (vs the attacker's Accuracy).{"\n"}
+              🏃 Agility — if your Agility is at least 4 higher than your foe's, you strike an extra time. (Dagger/Lightning boost it ×1.5.)
             </Text>
 
             <Text style={styles.legendSection}>🗡️ Weapon Strengths</Text>
@@ -774,17 +823,19 @@ function LegendModal({ visible, onClose }) {
               🥊 Gauntlets / 🌫️ Gray — Luck ×1.5 (more crits, blocks, and resists enemy crits)
             </Text>
 
-            <Text style={styles.legendSection}>🦶 Movement & Range</Text>
+            <Text style={styles.legendSection}>🦶 Actions, Movement & Range</Text>
             <Text style={styles.legendDesc}>
-              Move budget per turn: 5 (melee) / 4 (mage), +1 with Wind. You can split it — move, attack, then move again.{"\n"}
-              Attacks reach orthogonally only (no diagonals). Most weapons hit adjacent; bows and some abilities reach 2–4 tiles.
+              Each unit gets ONE move and ONE action (attack or cast) per turn. A move travels up to its movement value (5 melee / 4 mage, +1 Wind); once it moves, that's its move. You can ↩ undo a move until the unit takes its action — handy for repositioning after sizing up a matchup.{"\n"}
+              Each move has a reach (orthogonal only). A reach shown as a single number hits ONLY at that distance — e.g. a bow is range 2, so it can't hit a foe right next to it (and that foe can't counter it). A reach like "1-2" hits anywhere from 1 to 2 tiles.{"\n"}
+              ⬆ High ground counts as +1 distance: a foe on a different height than you is one step "further," so an adjacent high-vs-normal pair needs a move that reaches 2.
             </Text>
 
             <Text style={styles.legendSection}>⚔️ Combat</Text>
             <Text style={styles.legendDesc}>
-              Attacks resolve you → them → you → them, stopping the moment someone falls. The defender only counters if it can reach you and isn't Injured.{"\n"}
+              By default you and your target each strike once (you, then them). A unit with the 🏃 Agility edge (≥4 higher) strikes a second time; Brave makes both your strikes land before the counter.{"\n"}
+              The defender only counters if its own weapon's reach covers you (so a bow you hit from 1 tile can't counter) and it isn't Injured.{"\n"}
               Damage = your Power − their Protection. A hit can miss (their Evasion), be blocked (their Block vs your Accuracy), or crit (your Critical vs their Luck, ×1.5).{"\n"}
-              Open an attack to preview its damage, hit %, block %, crit % and effect.
+              Open an attack to preview its damage, hit %, block %, crit %, reach and effect.
             </Text>
           </ScrollView>
           <TouchableOpacity style={styles.legendClose} onPress={onClose}>
@@ -797,77 +848,131 @@ function LegendModal({ visible, onClose }) {
 }
 
 // ─────────────────────────── Attack chooser ───────────────────────────
-function AttackChooser({ attacker, target, dist, onPick, onCancel, atkTile, defTile, silenced }) {
+// One combined panel: a move selector up top + a live battle summary below that updates in real
+// time as you switch moves, then a single Attack button to commit the highlighted move.
+function AttackChooser({ attacker, target, dist, onPick, onCancel, atkTile, defTile, silenced, defenderCanCounter }) {
   const options = [
-    {
-      name: null,
-      label: `Basic ${cap(attacker.base_weapon)}`,
-      ability: null,
-      icon: WEAPON_GLYPH[attacker.base_weapon] || "⚔️",
-    },
+    { name: null, label: `Basic ${cap(attacker.base_weapon)}`, ability: null, icon: WEAPON_GLYPH[attacker.base_weapon] || "⚔️" },
     ...(attacker.abilities || []).map((n) => ({ name: n, label: n, ability: findAbility(attacker, n), icon: "🔥" })),
-  ];
+  ].map((o) => {
+    const rg = getRange(attacker, o.ability);
+    const blocked = silenced && !!o.name; // basic attack (name=null) is always allowed
+    return {
+      ...o,
+      rg,
+      rangeLabel: rg.min === rg.max ? `${rg.min}` : `${rg.min}-${rg.max}`,
+      blocked,
+      reach: withinRange(rg, dist) && !blocked,
+      type: o.ability ? o.ability.type : "Damage",
+    };
+  });
+  const firstReach = options.findIndex((o) => o.reach);
+  const [sel, setSel] = useState(firstReach >= 0 ? firstReach : 0);
+  const cur = options[Math.min(sel, options.length - 1)];
+  const isAoE = cur.type === "Radial" || cur.type === "Meteor";
+  const info = typeInfo(cur.type);
   const terr = terrainNote(atkTile, defTile);
+  const labels = (arr) => (arr || []).map((s) => STATUS_LABEL[s.type] || s.type).join(", ");
+
+  const pv = !isAoE ? previewExchange(attacker, target, cur.ability, atkTile, defTile, defenderCanCounter) : null;
+  const aoeP = isAoE ? previewStrike(attacker, target, cur.ability, atkTile, defTile) : null;
+  const radialN = cur.type === "Radial" ? (RADIAL_TARGETS[cur.name] ?? 3) : null;
+
+  // Compact half-width stat column (two side by side keeps the panel short).
+  const side = (who, s, mine) => (
+    <View style={[styles.pvCol, { borderColor: mine ? theme.mine : theme.enemy }]}>
+      <Text style={[styles.pvHeading, { color: mine ? theme.mine : theme.enemy }]} numberOfLines={1}>{who}</Text>
+      <Text style={styles.pvColSub}>{s.strikes > 0 ? `${s.strikes}× strike${s.strikes > 1 ? "s" : ""}` : "no counter"}</Text>
+      {s.strikes > 0 ? (
+        <>
+          <Text style={styles.pvStat}>🎯 {s.hitPct}%   💥 ~{s.damage}</Text>
+          <Text style={styles.pvStat}>🛡️ {s.blockPct}%   ✨ {s.critPct}%</Text>
+        </>
+      ) : (
+        <Text style={styles.pvStat}>out of reach / injured</Text>
+      )}
+    </View>
+  );
+  const statusLine = [
+    labels(target.statuses) && `Them: ${labels(target.statuses)}`,
+    labels(attacker.statuses) && `You: ${labels(attacker.statuses)}`,
+  ].filter(Boolean).join("   ·   ");
+
   return (
     <>
-      <Text style={styles.sheetTitle}>
+      <Text style={styles.sheetTitle} numberOfLines={1}>
         {WEAPON_GLYPH[attacker.base_weapon]} {attacker.name} → {target.name}
       </Text>
-      <Text style={styles.sheetSub}>
-        📏 Distance {dist}
-        {"   "}❤️ {target.health}/{target.maxHealth}
+      <Text style={styles.sheetSub} numberOfLines={1}>
+        📏 {dist}   ❤️ {target.health}/{target.maxHealth}{terr ? "   " + terr : ""}
       </Text>
-      {!!terr && <Text style={styles.terrNote}>{terr}</Text>}
-      {silenced && <Text style={styles.terrNote}>🔇 Silenced — abilities are unavailable this turn</Text>}
-      {options.map((opt, i) => {
-        const range = getAttackRange(attacker, opt.ability);
-        const blocked = silenced && !!opt.name; // basic attack (name=null) is always allowed
-        const reach = dist <= range && !blocked;
-        const p = previewStrike(attacker, target, opt.ability, atkTile, defTile);
-        return (
+
+      {/* Move selector — tap to preview each move live */}
+      <View style={styles.moveRow}>
+        {options.map((o, i) => (
           <TouchableOpacity
             key={i}
-            disabled={!reach}
-            onPress={() => onPick(opt.name)}
-            style={[styles.optRow, !reach && styles.optDisabled]}
+            disabled={!o.reach}
+            onPress={() => setSel(i)}
+            style={[styles.moveChip, i === sel && styles.moveChipActive, !o.reach && styles.moveChipDisabled]}
           >
-            <Text style={styles.optIcon}>{opt.icon}</Text>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.optName}>
-                {blocked ? "🔒 " : ""}
-                {opt.label}
-                {blocked ? "  (silenced)" : !reach ? `  (needs range ${range})` : ""}
-              </Text>
-              <Text style={styles.optMeta}>
-                💥 ~{p.damage} 🎯 {p.hitPct}% 🛡️ {p.blockPct}% ✨ {p.critPct}% 📏 {range}
-              </Text>
-              {(() => {
-                const t = opt.ability && opt.ability.type;
-                if (t === "Radial") {
-                  const n = RADIAL_TARGETS[opt.name] ?? 3;
-                  return <Text style={styles.aoeNote}>🌀 hits up to {n === Infinity ? "all" : n} enemies in range · no counters</Text>;
-                }
-                if (t === "Meteor") return <Text style={styles.aoeNote}>☄️ primary + ⅓ splash to adjacent enemies · no counters</Text>;
-                return null;
-              })()}
-              {(() => {
-                const info = typeInfo(opt.ability ? opt.ability.type : "Damage");
-                return (
-                  <Text style={[styles.optEffect, !info.done && styles.optEffectSoon]}>
-                    {info.label}
-                    {info.desc ? " · " + info.desc : ""}
-                    {!info.done ? "  (soon)" : ""}
-                  </Text>
-                );
-              })()}
-            </View>
-            {reach && <Text style={styles.optGo}>›</Text>}
+            <Text style={[styles.moveChipText, i === sel && { color: "#fff" }]} numberOfLines={1}>
+              {o.blocked ? "🔒 " : ""}{o.icon} {o.label}
+            </Text>
+            <Text style={styles.moveChipSub} numberOfLines={1}>
+              {!o.reach ? (o.blocked ? "silenced" : `needs ${o.rangeLabel}`) : typeInfo(o.type).label}
+            </Text>
           </TouchableOpacity>
-        );
-      })}
-      <Text style={styles.sheetNote}>
-        You strike, they counter, you strike, they counter — stops the moment someone falls.
-      </Text>
+        ))}
+      </View>
+
+      {/* What the highlighted move does — fixed-height so switching moves never shifts the rest. */}
+      <View style={styles.descBlock}>
+        <Text style={[styles.pvType, !info.done && { color: theme.textDim }]} numberOfLines={2}>
+          🏷 {info.label}{info.desc ? ` — ${info.desc}` : ""}{!info.done ? " (not yet implemented)" : ""}
+        </Text>
+        <Text style={styles.pvSummary} numberOfLines={2}>
+          {cur.ability ? cur.ability.effect : "A basic strike with your equipped weapon."}
+        </Text>
+        {!!statusLine && <Text style={styles.pvStatus} numberOfLines={2}>⚑ {statusLine}</Text>}
+      </View>
+
+      {/* Live odds — also fixed-height so the buttons stay put. */}
+      <View style={styles.oddsBlock}>
+        {isAoE ? (
+          <View style={[styles.pvCol, { borderColor: theme.mine }]}>
+            <Text style={[styles.pvHeading, { color: theme.mine }]}>You vs {target.name}</Text>
+            <Text style={styles.pvStat}>🎯 {aoeP.hitPct}%   💥 ~{aoeP.damage}   🛡️ {aoeP.blockPct}%   ✨ {aoeP.critPct}%</Text>
+            <Text style={styles.aoeNote}>
+              {cur.type === "Radial"
+                ? `🌀 up to ${radialN === Infinity ? "all" : radialN} enemies · no counters`
+                : "☄️ primary + ⅓ splash to adjacent · no counters"}
+            </Text>
+          </View>
+        ) : (
+          <>
+            <View style={styles.pvRow}>
+              {side("You", pv.attacker, true)}
+              {side(target.name, pv.defender, false)}
+            </View>
+            <Text style={styles.pvOrder}>↻ {pv.order.map((s) => (s[0] === "A" ? "You" : "Them")).join(" → ")}</Text>
+            {pv.agility.attackerDouble && (
+              <Text style={styles.pvNote}>🏃 You strike twice{cur.type === "Brave" ? " (Brave)" : ` (agility ${pv.agility.atk} vs ${pv.agility.def})`}</Text>
+            )}
+            {pv.agility.defenderDouble && pv.defender.strikes >= 2 && (
+              <Text style={styles.pvNote}>🏃 They counter twice (agility {pv.agility.def} vs {pv.agility.atk})</Text>
+            )}
+          </>
+        )}
+      </View>
+
+      <TouchableOpacity
+        style={[styles.confirmBtn, !cur.reach && { opacity: 0.4 }]}
+        disabled={!cur.reach}
+        onPress={() => onPick(cur.name)}
+      >
+        <Text style={styles.confirmText}>⚔️ Attack with {cur.label}</Text>
+      </TouchableOpacity>
       <TouchableOpacity style={styles.cancelBtn} onPress={onCancel}>
         <Text style={styles.cancelText}>Cancel</Text>
       </TouchableOpacity>
@@ -1237,6 +1342,8 @@ const styles = StyleSheet.create({
     minHeight: 54,
   },
   legendBtnText: { fontFamily: FONTS.heading, color: theme.text, fontSize: 13 },
+  undoBtn: { marginHorizontal: 10, marginBottom: 6, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: theme.warn, backgroundColor: "#2a2412", alignItems: "center" },
+  undoText: { color: theme.warn, fontSize: 13, fontWeight: "700" },
   legendBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.72)",
@@ -1292,6 +1399,17 @@ const styles = StyleSheet.create({
   endText: { fontFamily: FONTS.heading, color: "#23170a", fontSize: 16, letterSpacing: 1 },
 
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "flex-end" },
+  // Centered, fixed-size battle panel — consistent dimensions regardless of the move's info.
+  centerBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "center", alignItems: "center" },
+  attackCard: {
+    width: Math.min(420, SCREEN_W - 28),
+    height: Math.min(560, Math.round(SCREEN_H * 0.82)),
+    backgroundColor: theme.card,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: theme.border,
+    overflow: "hidden",
+  },
   sheet: {
     backgroundColor: theme.card,
     borderTopLeftRadius: 20,
@@ -1323,8 +1441,30 @@ const styles = StyleSheet.create({
   aoeNote: { color: "#e0b0ff", fontSize: 12, marginTop: 3, fontWeight: "700" },
   optGo: { color: theme.textDim, fontSize: 24 },
   sheetNote: { color: theme.textDim, fontSize: 12, marginVertical: 8, fontStyle: "italic" },
-  cancelBtn: { padding: 14, alignItems: "center" },
+  cancelBtn: { padding: 9, alignItems: "center" },
   cancelText: { color: theme.danger, fontWeight: "700", fontSize: 15 },
+  attackInner: { flex: 1, padding: 14 },
+  // Fixed-height regions: space is pre-allocated so different moves' info never moves the layout.
+  descBlock: { height: 112, overflow: "hidden", marginTop: 4 },
+  oddsBlock: { height: 150, overflow: "hidden", marginTop: 6 },
+  moveRow: { flexDirection: "row", flexWrap: "wrap", marginTop: 8, marginBottom: 2 },
+  moveChip: { paddingVertical: 6, paddingHorizontal: 11, borderRadius: 16, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.cardAlt, marginRight: 7, marginBottom: 7 },
+  moveChipActive: { borderColor: theme.mine, backgroundColor: "#1b3a66" },
+  moveChipDisabled: { opacity: 0.4, borderStyle: "dashed" },
+  moveChipText: { color: theme.text, fontSize: 13, fontWeight: "700" },
+  moveChipSub: { color: theme.textDim, fontSize: 10, marginTop: 1 },
+  pvType: { color: theme.good, fontSize: 13, marginTop: 6, fontWeight: "800", lineHeight: 17 },
+  pvSummary: { color: theme.text, fontSize: 12, marginTop: 3, fontStyle: "italic", lineHeight: 16 },
+  pvStatus: { color: theme.warn, fontSize: 11.5, marginTop: 4, lineHeight: 15 },
+  pvRow: { flexDirection: "row", marginTop: 8, marginHorizontal: -3 },
+  pvCol: { flex: 1, borderWidth: 1, borderRadius: 10, paddingVertical: 7, paddingHorizontal: 8, backgroundColor: theme.cardAlt, marginHorizontal: 3 },
+  pvHeading: { fontWeight: "800", fontSize: 13, marginBottom: 1 },
+  pvColSub: { color: theme.textDim, fontSize: 11, marginBottom: 3 },
+  pvStat: { color: theme.text, fontSize: 12.5, fontWeight: "600", lineHeight: 18 },
+  pvOrder: { color: theme.textDim, fontSize: 12, marginTop: 6, fontWeight: "600" },
+  pvNote: { color: theme.good, fontSize: 12, marginTop: 4, fontWeight: "700" },
+  confirmBtn: { marginTop: 12, paddingVertical: 13, borderRadius: 10, alignItems: "center", backgroundColor: "#143a2a", borderWidth: 1, borderColor: theme.good },
+  confirmText: { color: theme.good, fontWeight: "800", fontSize: 16 },
 
   resultBackdrop: {
     flex: 1,

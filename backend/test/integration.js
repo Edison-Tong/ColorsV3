@@ -130,17 +130,22 @@ const emit = (sock, ev, payload, ms = 8000) =>
   if (moveRes.error) throw new Error("move failed: " + moveRes.error);
   console.log(`✓ moved unit ${unitId} from ${pos.r},${pos.c} to ${to.r},${to.c} (dist 1)`);
 
-  // Cumulative movement: the unit kept (move_value - 1) points, so it can keep moving this turn.
-  const mv = s1.units[unitId].move_value;
-  const to2 = { r: to.r, c: to.c + (mv - 1) };
-  const m2 = await emit(mover, "move", { code, charId: Number(unitId), to: to2 });
-  if (m2.error) throw new Error("cumulative move failed: " + m2.error);
-  console.log(`✓ same unit moved ${mv - 1} more spaces later in the turn (budget now spent)`);
+  // ONE move per turn: a second move is rejected even though the path is short.
+  const m2 = await emit(mover, "move", { code, charId: Number(unitId), to: { r: to.r + dir, c: to.c } });
+  if (!m2.error) throw new Error("expected second-move rejection (one move per turn)");
+  console.log("✓ second move correctly rejected:", m2.error);
 
-  // One more step should now be rejected — the budget is exhausted.
-  const m3 = await emit(mover, "move", { code, charId: Number(unitId), to: { r: to2.r, c: to2.c + 1 } });
-  if (!m3.error) throw new Error("expected out-of-budget rejection");
-  console.log("✓ over-budget move correctly rejected:", m3.error);
+  // Undo the move (no action taken yet) -> the unit returns to its original tile, then can move again.
+  const undoState = once(mover, "state"); // undoMove broadcasts fresh state
+  const undoRes = await emit(mover, "undoMove", { code, charId: Number(unitId) });
+  if (undoRes.error) throw new Error("undoMove failed: " + undoRes.error);
+  const sUndo = await undoState;
+  const back = sUndo.positions[unitId];
+  if (back.r !== pos.r || back.c !== pos.c) throw new Error(`undo didn't restore position (got ${back.r},${back.c})`);
+  console.log(`✓ undoMove returned unit ${unitId} to ${pos.r},${pos.c}`);
+  const m3 = await emit(mover, "move", { code, charId: Number(unitId), to });
+  if (m3.error) throw new Error("re-move after undo failed: " + m3.error);
+  console.log("✓ unit moved again after undo");
 
   // Mage specials: the mover's mage can cast one of its 3 specials (here, on itself).
   const mageEntry = Object.entries(s1.units).find(([id, u]) => u.ownerId === moverId && u.type === "mage");
