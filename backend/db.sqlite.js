@@ -39,9 +39,13 @@ db.exec(`
     speed       INTEGER NOT NULL,
     skill       INTEGER NOT NULL,
     knowledge   INTEGER NOT NULL,
-    luck        INTEGER NOT NULL
+    luck        INTEGER NOT NULL,
+    efficient_against TEXT
   );
 `);
+
+// Migration for databases created before efficient_against existed.
+try { db.exec("ALTER TABLE characters ADD COLUMN efficient_against TEXT"); } catch (e) { /* column already present */ }
 
 const stmts = {
   insertUser: db.prepare("INSERT INTO users (username, password) VALUES (?, ?) RETURNING id, username"),
@@ -54,10 +58,10 @@ const stmts = {
   insertCharacter: db.prepare(`
     INSERT INTO characters
       (team_id, name, type, size, base_weapon, move_value, abilities, specials,
-       health, strength, defense, magick, resistance, speed, skill, knowledge, luck)
+       health, strength, defense, magick, resistance, speed, skill, knowledge, luck, efficient_against)
     VALUES
       (@team_id, @name, @type, @size, @base_weapon, @move_value, @abilities, @specials,
-       @health, @strength, @defense, @magick, @resistance, @speed, @skill, @knowledge, @luck)
+       @health, @strength, @defense, @magick, @resistance, @speed, @skill, @knowledge, @luck, @efficient_against)
     RETURNING *`),
   charsForTeam: db.prepare("SELECT * FROM characters WHERE team_id = ? ORDER BY id"),
   charById: db.prepare("SELECT * FROM characters WHERE id = ?"),
@@ -66,7 +70,8 @@ const stmts = {
     UPDATE characters SET
       name=@name, type=@type, size=@size, base_weapon=@base_weapon, move_value=@move_value,
       abilities=@abilities, specials=@specials, health=@health, strength=@strength, defense=@defense,
-      magick=@magick, resistance=@resistance, speed=@speed, skill=@skill, knowledge=@knowledge, luck=@luck
+      magick=@magick, resistance=@resistance, speed=@speed, skill=@skill, knowledge=@knowledge, luck=@luck,
+      efficient_against=@efficient_against
     WHERE id=@id RETURNING *`),
 };
 

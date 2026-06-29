@@ -45,9 +45,11 @@ async function init() {
       speed       INTEGER NOT NULL,
       skill       INTEGER NOT NULL,
       knowledge   INTEGER NOT NULL,
-      luck        INTEGER NOT NULL
+      luck        INTEGER NOT NULL,
+      efficient_against TEXT
     );
   `);
+  await q("ALTER TABLE characters ADD COLUMN IF NOT EXISTS efficient_against TEXT"); // migrate older DBs
   console.log("Postgres schema ready");
 }
 
@@ -89,10 +91,10 @@ module.exports = {
     const r = await q(
       `INSERT INTO characters
         (team_id, name, type, size, base_weapon, move_value, abilities, specials,
-         health, strength, defense, magick, resistance, speed, skill, knowledge, luck)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+         health, strength, defense, magick, resistance, speed, skill, knowledge, luck, efficient_against)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
       [d.team_id, d.name, d.type, d.size, d.base_weapon, d.move_value, d.abilities, d.specials,
-       d.health, d.strength, d.defense, d.magick, d.resistance, d.speed, d.skill, d.knowledge, d.luck]
+       d.health, d.strength, d.defense, d.magick, d.resistance, d.speed, d.skill, d.knowledge, d.luck, d.efficient_against ?? null]
     );
     return hydrate(r.rows[0]);
   },
@@ -108,10 +110,11 @@ module.exports = {
     const r = await q(
       `UPDATE characters SET
          name=$1, type=$2, size=$3, base_weapon=$4, move_value=$5, abilities=$6, specials=$7,
-         health=$8, strength=$9, defense=$10, magick=$11, resistance=$12, speed=$13, skill=$14, knowledge=$15, luck=$16
+         health=$8, strength=$9, defense=$10, magick=$11, resistance=$12, speed=$13, skill=$14, knowledge=$15, luck=$16,
+         efficient_against=$18
        WHERE id=$17 RETURNING *`,
       [d.name, d.type, d.size, d.base_weapon, d.move_value, d.abilities, d.specials,
-       d.health, d.strength, d.defense, d.magick, d.resistance, d.speed, d.skill, d.knowledge, d.luck, id]
+       d.health, d.strength, d.defense, d.magick, d.resistance, d.speed, d.skill, d.knowledge, d.luck, id, d.efficient_against ?? null]
     );
     return hydrate(r.rows[0]);
   },

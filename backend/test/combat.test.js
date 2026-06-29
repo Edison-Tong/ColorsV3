@@ -207,4 +207,21 @@ assert.ok(combat.inAttackRange({ r: 0, c: 0 }, { r: 0, c: 1 }, N0, HG, scorchRan
 // Counter eligibility: a sword can't counter a bow attacking from 2 tiles away.
 assert.ok(!combat.inAttackRange({ r: 0, c: 2 }, { r: 0, c: 0 }, N0, N0, swordRange), "sword (range 1) can't counter across 2 tiles");
 
+// 21. Efficiency: ×1.3 to the weapon's signature stat, ONLY vs the matching target weapon type.
+const effAtk = mk({ id: 1, base_weapon: "axe", abilities: ["Breaker", "Tomahawk"], strength: 10, efficient_against: "fire" });
+const breaker = combat.findAbility(effAtk, "Breaker");
+const offEff = combat.computeAllStats(effAtk, breaker, 1, false);
+const onEff = combat.computeAllStats(effAtk, breaker, 1, true);
+assert.ok(onEff.power > offEff.power, "axe Efficiency raises Power when active");
+assert.strictEqual(onEff.evasion, offEff.evasion, "Efficiency doesn't touch unrelated stats");
+const midE = () => 0.5;
+const tgtOpts = { health: 9999, maxHealth: 9999, defense: 0, resistance: 0, luck: 30, speed: 0, skill: 0, knowledge: 0 };
+const vsFire = combat.resolveExchange(effAtk, mk({ id: 2, base_weapon: "fire", type: "mage", ...tgtOpts }), "Breaker", false, n, n, midE);
+const vsSword = combat.resolveExchange(effAtk, mk({ id: 2, base_weapon: "sword", ...tgtOpts }), "Breaker", false, n, n, midE);
+assert.ok(vsFire.events[0].damage > vsSword.events[0].damage, `Efficiency hits harder vs the matching target (fire ${vsFire.events[0].damage} > sword ${vsSword.events[0].damage})`);
+// A non-Efficiency move ignores efficient_against entirely.
+const vsFireBasic = combat.resolveExchange(effAtk, mk({ id: 2, base_weapon: "fire", type: "mage", ...tgtOpts }), "Tomahawk", false, n, n, midE);
+const vsSwordBasic = combat.resolveExchange(effAtk, mk({ id: 2, base_weapon: "sword", ...tgtOpts }), "Tomahawk", false, n, n, midE);
+assert.strictEqual(vsFireBasic.events[0].damage, vsSwordBasic.events[0].damage, "a non-Efficiency move is unaffected by the target's weapon");
+
 console.log("All combat sanity checks passed ✓");

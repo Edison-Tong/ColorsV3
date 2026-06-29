@@ -17,6 +17,7 @@ import { getSocket } from "../api";
 import { theme, FONTS, WEAPON_GLYPH } from "../theme";
 import { Torn, TornButton } from "../components/Torn";
 import { TILES, tileFor } from "../data/board";
+import { weaponsData } from "../data/weaponsData";
 import {
   computeAllStats,
   getMoveValue,
@@ -63,7 +64,7 @@ const TYPE_INFO = {
   Radial: { label: "Radial", desc: "Hits several enemies in range (no counters)", done: true },
   Meteor: { label: "Meteor", desc: "Ranged; ⅓ splash to adjacent enemies", done: true },
   Piercing: { label: "Piercing", desc: "Ignores the target's protection", done: true },
-  Efficiency: { label: "Efficiency", desc: "×1.3 to a stat vs certain units", done: false },
+  Efficiency: { label: "Efficiency", desc: "×1.3 to your weapon's stat vs your chosen target type", done: true },
   Brave: { label: "Brave", desc: "Both your strikes land before they counter", done: true },
   Absorption: { label: "Absorption", desc: "Heals you 50% of damage dealt", done: true },
   Burning: { label: "Burning", desc: "Inflicts Burn (−12.5% HP/turn, 2 turns)", done: true },
@@ -99,6 +100,7 @@ export default function BattleScreen({ route, navigation }) {
   const [inspect, setInspect] = useState(null); // { unit, r, c } for the inspect popup
   const [legendOpen, setLegendOpen] = useState(false); // full-screen help/legend
   const [tickInfo, setTickInfo] = useState(null); // last damage-over-time ticks, for a brief banner
+  const [effPicker, setEffPicker] = useState(false); // mid-battle "change efficiency target" picker
   const vScroll = useRef(null);
   const hScroll = useRef(null);
   const scrolledRef = useRef(false);
@@ -157,11 +159,7 @@ export default function BattleScreen({ route, navigation }) {
     return () => sub.remove();
   }, [socket, code, userId]);
 
-  useEffect(() => {
-    if (!result) return;
-    const t = setTimeout(() => setResult(null), 4000);
-    return () => clearTimeout(t);
-  }, [result]);
+  // The attack result stays up until the player dismisses it (tap the backdrop / "tap to dismiss").
   useEffect(() => {
     if (!castResult) return;
     const t = setTimeout(() => setCastResult(null), 3500);
@@ -196,6 +194,9 @@ export default function BattleScreen({ route, navigation }) {
   // Undo is a global LIFO: pop the most recent move (server-tracked), blocked once an attack is on top.
   const canUndo = myTurn && !state.over && !!state.canUndo;
   const lastMoveName = state.lastMoveId != null ? units[state.lastMoveId]?.name : null;
+  // Efficiency: does the selected unit have an Efficiency move, and can it change target (= spend its action)?
+  const selEfficiencyAbility = selected && (selected.abilities || []).map((n) => findAbility(selected, n)).find((a) => a && a.type === "Efficiency");
+  const canSetEfficiency = isMine && selAlive && myTurn && !hasActed && !!selEfficiencyAbility;
 
   const moveCells = useMemo(() => {
     // One move per turn: no move cells once the unit has moved (or is immobilized / aiming a special).
@@ -299,6 +300,12 @@ export default function BattleScreen({ route, navigation }) {
   const undoMove = () => {
     socket.emit("undoMove", { code }, (res) => {
       if (res?.error) Alert.alert("Can't undo", res.error);
+    });
+  };
+  const setEfficiency = (target) => {
+    setEffPicker(false);
+    socket.emit("setEfficiency", { code, charId: selectedId, target }, (res) => {
+      if (res?.error) Alert.alert("Couldn't change", res.error);
     });
   };
   const leave = () => {
@@ -480,6 +487,14 @@ export default function BattleScreen({ route, navigation }) {
         </TouchableOpacity>
       )}
 
+      {canSetEfficiency && (
+        <TouchableOpacity style={styles.effBtn} onPress={() => setEffPicker(true)}>
+          <Text style={styles.effText}>
+            🎯 Efficient vs {selected.efficient_against ? cap(selected.efficient_against) : "—"} · tap to change (uses action)
+          </Text>
+        </TouchableOpacity>
+      )}
+
       <View style={styles.bottomBar}>
         <TouchableOpacity style={styles.legendBtn} onPress={() => setLegendOpen(true)}>
           <Text style={styles.legendBtnText}>📖 Legend</Text>
@@ -495,6 +510,36 @@ export default function BattleScreen({ route, navigation }) {
       </View>
 
       <LegendModal visible={legendOpen} onClose={() => setLegendOpen(false)} />
+
+      {/* Change-efficiency picker (mid-battle) */}
+      <Modal visible={effPicker} transparent animationType="fade" onRequestClose={() => setEffPicker(false)}>
+        <View style={styles.centerBackdrop}>
+          <View style={styles.effCard}>
+            <Text style={styles.sheetTitle}>🎯 Efficient against…</Text>
+            <Text style={styles.sheetSub} numberOfLines={2}>
+              Pick a weapon type. This uses {selected?.name}'s action and ends its turn.
+            </Text>
+            <ScrollView style={{ maxHeight: 320 }}>
+              <View style={styles.moveRow}>
+                {Object.values(weaponsData.weapons).map((w) => (
+                  <TouchableOpacity
+                    key={w.value}
+                    onPress={() => setEfficiency(w.value)}
+                    style={[styles.moveChip, selected?.efficient_against === w.value && styles.moveChipActive]}
+                  >
+                    <Text style={[styles.moveChipText, selected?.efficient_against === w.value && { color: "#fff" }]}>
+                      {WEAPON_GLYPH[w.value] || "⚔️"} {w.label}{w.type === "magick" ? " (mage)" : ""}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setEffPicker(false)}>
+              <Text style={styles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Inspect any unit (long-press) — compact popup */}
       <Modal visible={!!inspect} transparent animationType="fade" onRequestClose={() => setInspect(null)}>
@@ -1343,6 +1388,9 @@ const styles = StyleSheet.create({
   },
   legendBtnText: { fontFamily: FONTS.heading, color: theme.text, fontSize: 13 },
   undoBtn: { marginHorizontal: 10, marginBottom: 6, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: theme.warn, backgroundColor: "#2a2412", alignItems: "center" },
+  effBtn: { marginHorizontal: 10, marginBottom: 6, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: theme.good, backgroundColor: "#10261b", alignItems: "center" },
+  effText: { color: theme.good, fontSize: 13, fontWeight: "700" },
+  effCard: { width: Math.min(420, SCREEN_W - 28), maxHeight: Math.round(SCREEN_H * 0.8), backgroundColor: theme.card, borderRadius: 16, borderWidth: 1, borderColor: theme.border, padding: 16 },
   undoText: { color: theme.warn, fontSize: 13, fontWeight: "700" },
   legendBackdrop: {
     flex: 1,

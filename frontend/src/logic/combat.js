@@ -119,7 +119,7 @@ export function reachable(start, budget, tileAt, isBlocked, rows, cols) {
   return { cells, dist };
 }
 
-export function computeAllStats(character, ability, defMult = 1) {
+export function computeAllStats(character, ability, defMult = 1, efficient = false) {
   const weapon = getWeaponStats(character);
   const mage = isMage(character);
   const ab = ability || {};
@@ -162,6 +162,16 @@ export function computeAllStats(character, ability, defMult = 1) {
   else if (wepKey === "light") { wepProtMult = 1.25; wepAccuracyMult = 1.25; }
   else if (wepKey === "dark") { wepPowerMult = 1.25; wepProtMult = 1.25; }
   else if (wepKey === "gauntlets" || wepKey === "gray") wepLuckMult = 1.5;
+
+  // Efficiency: ×1.3 to this melee weapon's signature stat (mirrors backend/combat.js).
+  if (efficient) {
+    if (wepKey === "axe") wepPowerMult *= 1.3;
+    else if (wepKey === "sword") wepEvasionMult *= 1.3;
+    else if (wepKey === "dagger") wepAgilityMult *= 1.3;
+    else if (wepKey === "lance") wepProtMult *= 1.3;
+    else if (wepKey === "bow") wepAccuracyMult *= 1.3;
+    else if (wepKey === "gauntlets") wepLuckMult *= 1.3;
+  }
 
   const adjLck = lck * wepLuckMult;
   const hitBase = ab["hit%"] != null ? num(ab["hit%"]) : num(weapon["hit%"]);
@@ -241,7 +251,9 @@ const clampPct = (v) => Math.max(0, Math.min(100, Math.round(v)));
 // the agility picture, and which side (if any) earns a bonus strike. `defenderCanCounter` is the
 // caller's range/injury check (a unit whose reach can't cover the attacker can't counter).
 export function previewExchange(attacker, defender, ability, atkTile, defTile, defenderCanCounter) {
-  const a = applyTerrain(computeAllStats(attacker, ability, defMultFor(atkTile)), atkTile, defTile);
+  const efficient = !!(ability && ability.type === "Efficiency" && attacker.efficient_against &&
+    String(defender.base_weapon || "").toLowerCase() === String(attacker.efficient_against).toLowerCase());
+  const a = applyTerrain(computeAllStats(attacker, ability, defMultFor(atkTile), efficient), atkTile, defTile);
   const d = applyTerrain(computeAllStats(defender, null, defMultFor(defTile)), defTile, atkTile);
   const type = ability ? ability.type : "Damage";
   const piercing = type === "Piercing";

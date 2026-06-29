@@ -92,7 +92,7 @@ const rosterB = [
     abilities: ["Leech Life", "Pin Needle"],
     specials: ["Blossom", "Absorb", "Thistle"],
   }, // Absorption, Poisoning
-  { name: "Breacher", type: "melee", size: 4, base_weapon: "axe", abilities: ["Armor Cleaver", "Breaker"] }, // Piercing, Efficiency
+  { name: "Breacher", type: "melee", size: 4, base_weapon: "axe", abilities: ["Armor Cleaver", "Breaker"], efficient_against: "fire" }, // Piercing, Efficiency (×1.3 Power vs fire mages)
   { name: "Blinder", type: "melee", size: 3, base_weapon: "sword", abilities: ["Gouge", "Sword Dance"] }, // Blinding, Damage
   { name: "Pikeman", type: "melee", size: 3, base_weapon: "lance", abilities: ["Javelin", "Spear Sweep"] }, // Damage, Radial
   { name: "Brawler", type: "melee", size: 1, base_weapon: "gauntlets", abilities: ["Disarm", "Vault"] }, // Damage, Radial
@@ -109,6 +109,7 @@ function buildRow(teamId, c) {
     move_value: combat.getMoveValue({ type: c.type, base_weapon: c.base_weapon }),
     abilities: JSON.stringify(c.abilities),
     specials: JSON.stringify(c.type === "mage" ? c.specials || [] : []),
+    efficient_against: c.efficient_against || null,
     health: stats.health,
     strength: stats.strength,
     defense: stats.defense,

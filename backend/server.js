@@ -67,6 +67,13 @@ function abilitiesValid(character) {
   if (!Array.isArray(character.abilities) || character.abilities.length !== 2) return "Pick exactly 2 weapon abilities";
   for (const a of character.abilities) if (!valid.has(a)) return `Invalid ability: ${a}`;
 
+  // Efficiency move equipped -> must pick a (valid) weapon type it's efficient against.
+  const hasEfficiency = (weaponsData.weaponAbilities[key] || []).some((a) => a.type === "Efficiency" && character.abilities.includes(a.name));
+  if (hasEfficiency) {
+    const ea = String(character.efficient_against || "").toLowerCase();
+    if (!weaponsData.weapons[ea]) return "Pick a weapon type this character is efficient against";
+  }
+
   if (String(character.type).toLowerCase() === "mage") {
     const validSp = new Set((weaponsData.mageSpecialAbilities[key] || []).map((a) => a.name));
     if (!Array.isArray(character.specials) || character.specials.length !== 3) return "Mages pick exactly 3 special abilities";
@@ -140,28 +147,33 @@ app.get("/teams/:id/characters", route(async (req, res) => {
 // `existing` is the OTHER characters to validate composition against (excludes self on edit).
 // Returns { error } or { row } (row has no team_id).
 function validateAndBuildCharacter(body, existing) {
-  const { name, type, size, base_weapon, abilities, specials, stats } = body || {};
+  const { name, type, size, base_weapon, abilities, specials, stats, efficient_against } = body || {};
   if (!name || !type || !size || !base_weapon || !stats) return { error: "Missing fields" };
 
   const compErr = validateComposition(existing, { type, size });
   if (compErr) return { error: compErr };
   const statErr = validateCharacterStats(stats);
   if (statErr) return { error: statErr };
-  const abErr = abilitiesValid({ type, base_weapon, abilities: abilities || [], specials: specials || [] });
+  const abErr = abilitiesValid({ type, base_weapon, abilities: abilities || [], specials: specials || [], efficient_against });
   if (abErr) return { error: abErr };
+
+  // Only persist efficient_against when an Efficiency move is actually equipped.
+  const wkey = String(base_weapon).toLowerCase();
+  const hasEfficiency = (weaponsData.weaponAbilities[wkey] || []).some((a) => a.type === "Efficiency" && (abilities || []).includes(a.name));
 
   return {
     row: {
       name: name.trim(),
       type: String(type).toLowerCase(),
       size: Number(size),
-      base_weapon: String(base_weapon).toLowerCase(),
+      base_weapon: wkey,
       move_value: combat.getMoveValue({ type, base_weapon }),
       abilities: JSON.stringify(abilities || []),
       specials: JSON.stringify(type === "mage" ? specials || [] : []),
       health: Number(stats.health), strength: Number(stats.strength), defense: Number(stats.defense),
       magick: Number(stats.magick), resistance: Number(stats.resistance), speed: Number(stats.speed),
       skill: Number(stats.skill), knowledge: Number(stats.knowledge), luck: Number(stats.luck),
+      efficient_against: hasEfficiency ? String(efficient_against).toLowerCase() : null,
     },
   };
 }
@@ -530,6 +542,7 @@ io.on("connection", (socket) => {
         outcomes.push({ targetId: e.targetId, type: e.type, damage: e.damage, dmgMult: e.dmgMult, hp: u.health });
       }
       b.acted[attackerId] = true;
+      b.moved[attackerId] = true; // acting also forfeits the move — the unit's turn is finished
       b.history.push({ kind: "act", charId: Number(attackerId) });
       checkWin(room);
       io.to(room.code).emit("attackResult", { attackerId, abilityName, aoe: true, targets: outcomes });
@@ -560,7 +573,8 @@ io.on("connection", (socket) => {
       const eff = ON_HIT_STATUS[ability.type];
       if (eff) addStatus(defender, eff.status, { turnsLeft: eff.turns, dot: !!eff.dot });
     }
-    b.acted[attackerId] = true; // one attack per unit per turn; movement is its own action
+    b.acted[attackerId] = true; // one action per unit per turn
+    b.moved[attackerId] = true; // acting also forfeits the move — the unit's turn is finished
     b.history.push({ kind: "act", charId: Number(attackerId) });
 
     checkWin(room);
@@ -604,12 +618,40 @@ io.on("connection", (socket) => {
     if (Number(targetId) !== Number(casterId) && !combat.withinRange(sRange, sDist)) return cb && cb({ error: "Target out of range" });
 
     b.acted[casterId] = true; // casting is the unit's action for the turn
+    b.moved[casterId] = true; // acting also forfeits the move — the unit's turn is finished
     b.history.push({ kind: "act", charId: Number(casterId) });
 
     io.to(room.code).emit("specialResult", {
       casterId, targetId, specialName,
       effect: special.effect, description: special.description,
     });
+    cb && cb({ ok: true });
+    broadcast(room);
+  });
+
+  // Change which weapon type a unit is Efficient against, mid-battle. Counts as the unit's ACTION
+  // (so no attack/cast) and forfeits its move — its turn is finished. Per-battle only (doesn't touch
+  // the saved character). Requires the unit to actually have an Efficiency move equipped.
+  on("setEfficiency", ({ code, charId, target }, cb) => {
+    const room = rooms[code];
+    if (!room || !room.battle) return cb && cb({ error: "No battle" });
+    const b = room.battle;
+    const me = room.sandbox ? b.turnUserId : socket.data.userId;
+    if (b.over) return cb && cb({ error: "Battle over" });
+    if (b.turnUserId !== me) return cb && cb({ error: "Not your turn" });
+    const unit = b.units[charId];
+    if (!unit || unit.ownerId !== me || !unit.alive) return cb && cb({ error: "Invalid unit" });
+    if (b.acted[charId]) return cb && cb({ error: "Unit already acted" });
+    const wkey = String(unit.base_weapon || "").toLowerCase();
+    const hasEff = (weaponsData.weaponAbilities[wkey] || []).some((a) => a.type === "Efficiency" && (unit.abilities || []).includes(a.name));
+    if (!hasEff) return cb && cb({ error: "This unit has no Efficiency move" });
+    const tgt = String(target || "").toLowerCase();
+    if (!weaponsData.weapons[tgt]) return cb && cb({ error: "Invalid target weapon type" });
+    unit.efficient_against = tgt;
+    b.acted[charId] = true;
+    b.moved[charId] = true; // changing efficiency is an action — forfeits the move too
+    b.history.push({ kind: "act", charId: Number(charId) });
+    io.to(room.code).emit("efficiencyChanged", { charId: Number(charId), target: tgt });
     cb && cb({ ok: true });
     broadcast(room);
   });

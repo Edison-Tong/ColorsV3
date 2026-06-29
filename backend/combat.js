@@ -132,7 +132,10 @@ function reachable(start, budget, tileAt, isBlocked, rows, cols) {
 // Full stat block for a character. `ability` (optional) folds its stat deltas + hit% into the attack.
 // `defMult` (default 1) scales the BASE defense stat — used for terrain "Def" effects so it
 // propagates to everything defense feeds: melee protection AND block.
-function computeAllStats(character, ability, defMult = 1) {
+// `efficient` (Efficiency move vs a matching target) adds an extra ×1.3 to the weapon's signature
+// stat — the same stat its family multiplier already boosts (axe→power, sword→eva, dagger→agility,
+// lance→protection, bow→accuracy, gauntlets→luck) — so it propagates exactly like that multiplier.
+function computeAllStats(character, ability, defMult = 1, efficient = false) {
   const weapon = getWeaponStats(character);
   const mage = isMage(character);
   const ab = ability || {};
@@ -180,6 +183,16 @@ function computeAllStats(character, ability, defMult = 1) {
   else if (wepKey === "light") { wepProtMult = 1.25; wepAccuracyMult = 1.25; }
   else if (wepKey === "dark") { wepPowerMult = 1.25; wepProtMult = 1.25; }
   else if (wepKey === "gauntlets" || wepKey === "gray") wepLuckMult = 1.5;
+
+  // Efficiency: ×1.3 to this melee weapon's signature stat (only when the move hits a matching target).
+  if (efficient) {
+    if (wepKey === "axe") wepPowerMult *= 1.3;
+    else if (wepKey === "sword") wepEvasionMult *= 1.3;
+    else if (wepKey === "dagger") wepAgilityMult *= 1.3;
+    else if (wepKey === "lance") wepProtMult *= 1.3;
+    else if (wepKey === "bow") wepAccuracyMult *= 1.3;
+    else if (wepKey === "gauntlets") wepLuckMult *= 1.3;
+  }
 
   const adjLck = lck * wepLuckMult;
   const hitBase = ab["hit%"] != null ? num(ab["hit%"]) : num(weapon["hit%"]);
@@ -267,7 +280,11 @@ function applyTerrain(stats, ownTile, oppTile) {
 // atkTile/defTile are { t, hg } for terrain effects. rng defaults to Math.random (pass seeded for tests).
 function resolveExchange(attacker, defender, abilityName, defenderCanCounter, atkTile = NORMAL_TILE, defTile = NORMAL_TILE, rng = Math.random) {
   const ability = findAbility(attacker, abilityName);
-  let atk = applyTerrain(computeAllStats(attacker, ability, defMultFor(atkTile)), atkTile, defTile);
+  // Efficiency: the attacker's buff fires only when this Efficiency move strikes its designated
+  // target weapon-type (set at character creation, or swapped mid-battle).
+  const efficient = !!(ability && ability.type === "Efficiency" && attacker.efficient_against &&
+    String(defender.base_weapon || "").toLowerCase() === String(attacker.efficient_against).toLowerCase());
+  let atk = applyTerrain(computeAllStats(attacker, ability, defMultFor(atkTile), efficient), atkTile, defTile);
   let def = applyTerrain(computeAllStats(defender, null, defMultFor(defTile)), defTile, atkTile);
 
   // Blinding halves an afflicted unit's accuracy on its own strikes (attacker or defender).

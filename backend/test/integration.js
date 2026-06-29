@@ -45,8 +45,8 @@ const mkStats = (o = {}) => ({ health: 10, strength: 8, defense: 6, magick: 8, r
 // A valid 6-char roster: one each of size 4/1, two each of 3/2, with 2 mages.
 const roster = [
   { name: "Brick", type: "melee", size: 4, base_weapon: "axe", abilities: ["Ragnarok", "Tomahawk"], stats: mkStats({ strength: 10, defense: 8 }) },
-  { name: "Edge", type: "melee", size: 3, base_weapon: "sword", abilities: ["Evasion", "Tipper"], stats: mkStats() },
-  { name: "Pike", type: "melee", size: 3, base_weapon: "lance", abilities: ["Javelin", "Guard"], stats: mkStats() },
+  { name: "Edge", type: "melee", size: 3, base_weapon: "sword", abilities: ["Evasion", "Tipper"], efficient_against: "bow", stats: mkStats() },
+  { name: "Pike", type: "melee", size: 3, base_weapon: "lance", abilities: ["Javelin", "Guard"], efficient_against: "axe", stats: mkStats() },
   { name: "Ember", type: "mage", size: 2, base_weapon: "fire", abilities: ["Incinerate", "Scorch"], specials: ["Ignite", "Spark", "Bolster"], stats: mkStats({ magick: 10 }) },
   { name: "Tide", type: "mage", size: 2, base_weapon: "water", abilities: ["Ice Spear", "Torrent"], specials: ["Hail", "Liquify", "Propel"], stats: mkStats({ magick: 10 }) },
   { name: "Nimble", type: "melee", size: 1, base_weapon: "dagger", abilities: ["Throwing Knives", "Blitz"], stats: mkStats({ speed: 10 }) },
@@ -88,7 +88,7 @@ const emit = (sock, ev, payload, ms = 8000) =>
   const target = aChars[0];
   const edited = await rest(`/characters/${target.id}`, "PUT", {
     name: "Renamed", type: target.type, size: target.size, base_weapon: target.base_weapon,
-    abilities: target.abilities, specials: target.specials,
+    abilities: target.abilities, specials: target.specials, efficient_against: target.efficient_against,
     stats: { health: 11, strength: target.strength, defense: target.defense, magick: target.magick, resistance: target.resistance, speed: target.speed, skill: target.skill, knowledge: target.knowledge, luck: target.luck },
   });
   if (edited.character.name !== "Renamed" || edited.character.health !== 11) throw new Error("edit did not persist");
