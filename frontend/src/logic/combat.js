@@ -173,20 +173,24 @@ export function computeAllStats(character, ability, defMult = 1, efficient = fal
     else if (wepKey === "gauntlets") wepLuckMult *= 1.3;
   }
 
-  const adjLck = lck * wepLuckMult;
+  // Timed stat modifiers from mage specials (mirrors backend/combat.js).
+  const mods = Array.isArray(character.statuses) ? character.statuses : [];
+  const modMult = (stat) => mods.reduce((m, s) => (s.modStat === stat ? m * (Number(s.mult) || 1) : m), 1);
+
+  const adjLck = lck * wepLuckMult * modMult("luck");
   const hitBase = ab["hit%"] != null ? num(ab["hit%"]) : num(weapon["hit%"]);
 
   return {
     isMage: mage,
     hitBase,
-    power: Math.round((power + sizePower) * wepPowerMult),
-    protection: { melee: Math.round(prot.melee * wepProtMult), magic: Math.round(prot.magic * wepProtMult) },
-    agility: Math.round((spd + sizeAgility) * wepAgilityMult),
-    accuracy: Math.round(Math.ceil(0.5 * spd + 0.5 * skl + 1 * knl + 0.5 * adjLck) * wepAccuracyMult + sizeAccuracy),
-    evasion: Math.round(Math.ceil(0.5 * spd + 1 * skl + 0.5 * knl + 0.5 * adjLck) * wepEvasionMult + sizeEvasion),
-    critical: Math.ceil(0.5 * spd + 0.5 * skl + 0.5 * knl + 1 * adjLck),
-    block: def + res + adjLck,
-    luck: lck,
+    power: Math.round((power + sizePower) * wepPowerMult * modMult("power")),
+    protection: { melee: Math.round(prot.melee * wepProtMult * modMult("protection")), magic: Math.round(prot.magic * wepProtMult * modMult("protection")) },
+    agility: Math.round((spd + sizeAgility) * wepAgilityMult * modMult("agility")),
+    accuracy: Math.round(Math.ceil(0.5 * spd + 0.5 * skl + 1 * knl + 0.5 * adjLck) * wepAccuracyMult * modMult("accuracy") + sizeAccuracy),
+    evasion: Math.round(Math.ceil(0.5 * spd + 1 * skl + 0.5 * knl + 0.5 * adjLck) * wepEvasionMult * modMult("evasion") + sizeEvasion),
+    critical: Math.round(Math.ceil(0.5 * spd + 0.5 * skl + 0.5 * knl + 1 * adjLck) * modMult("critical")),
+    block: (def + res + adjLck) * modMult("block"),
+    luck: lck * modMult("luck"),
   };
 }
 
@@ -261,16 +265,17 @@ export function previewExchange(attacker, defender, ability, atkTile, defTile, d
   const aAcc = hasStat(attacker, "blinded") ? Math.round(a.accuracy * 0.5) : a.accuracy;
   const dAcc = hasStat(defender, "blinded") ? Math.round(d.accuracy * 0.5) : d.accuracy;
 
-  // Attacker striking the defender.
-  const aProt = piercing ? 0 : a.isMage ? d.protection.magic : d.protection.melee;
+  // Attacker striking the defender (Piercing move OR a pierced defender => protection 0).
+  const aProt = (piercing || hasStat(defender, "pierced")) ? 0 : a.isMage ? d.protection.magic : d.protection.melee;
+  const dProtAtk = hasStat(attacker, "pierced") ? 0 : null; // attacker's prot when countered (pierced => 0)
   const atkSide = {
     damage: Math.max(0, Math.round(a.power - aProt)),
     hitPct: clampPct(a.hitBase + (aAcc - d.evasion)),
     blockPct: Math.max(0, Math.floor(d.block - aAcc)),
     critPct: Math.max(0, Math.round(a.critical - d.luck)),
   };
-  // Defender countering with its basic weapon.
-  const dProt = d.isMage ? a.protection.magic : a.protection.melee;
+  // Defender countering with its basic weapon (a pierced attacker takes the counter with 0 protection).
+  const dProt = dProtAtk != null ? dProtAtk : d.isMage ? a.protection.magic : a.protection.melee;
   const defSide = {
     damage: Math.max(0, Math.round(d.power - dProt)),
     hitPct: clampPct(d.hitBase + (dAcc - a.evasion)),

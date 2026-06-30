@@ -147,14 +147,15 @@ const emit = (sock, ev, payload, ms = 8000) =>
   if (m3.error) throw new Error("re-move after undo failed: " + m3.error);
   console.log("✓ unit moved again after undo");
 
-  // Mage specials: the mover's mage can cast one of its 3 specials (here, on itself).
+  // Mage specials: the mover's mage casts on ITSELF — uses specials[1]/[2], which are ally/self
+  // buffs for both seed mages (specials[0] is an enemy-only DoT and self-targeting is now rejected).
   const mageEntry = Object.entries(s1.units).find(([id, u]) => u.ownerId === moverId && u.type === "mage");
   if (!mageEntry) throw new Error("no mage found for mover");
   const [mageId, mageUnit] = mageEntry;
-  const castRes = await emit(mover, "cast", { code, casterId: Number(mageId), targetId: Number(mageId), specialName: mageUnit.specials[0] });
+  const castRes = await emit(mover, "cast", { code, casterId: Number(mageId), targetId: Number(mageId), specialName: mageUnit.specials[1] });
   if (castRes.error) throw new Error("cast failed: " + castRes.error);
-  console.log(`✓ mage cast special "${mageUnit.specials[0]}" (1 of ${mageUnit.specials.length} available)`);
-  const castRes2 = await emit(mover, "cast", { code, casterId: Number(mageId), targetId: Number(mageId), specialName: mageUnit.specials[1] });
+  console.log(`✓ mage cast self-buff special "${mageUnit.specials[1]}"`);
+  const castRes2 = await emit(mover, "cast", { code, casterId: Number(mageId), targetId: Number(mageId), specialName: mageUnit.specials[2] });
   if (!castRes2.error) throw new Error("expected already-acted rejection on second cast");
   console.log("✓ casting twice correctly rejected:", castRes2.error);
 

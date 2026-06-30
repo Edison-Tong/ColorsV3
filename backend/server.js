@@ -11,6 +11,7 @@ const store = require("./db");
 const { weaponsData } = require("./weaponsData");
 const combat = require("./combat");
 const board = require("./board");
+const mageEffects = require("./mageEffects");
 
 const app = express();
 app.use(cors());
@@ -440,6 +441,7 @@ io.on("connection", (socket) => {
     const unit = b.units[charId];
     if (!unit || unit.ownerId !== me || !unit.alive) return cb && cb({ error: "Invalid unit" });
     if (hasStatus(unit, "immobilized")) return cb && cb({ error: "Immobilized — can't move this turn" });
+    if (hasStatus(unit, "cursed")) return cb && cb({ error: "Cursed — can't move this turn" });
     // ONE move per turn: a unit may move a single time (path up to its full movement value).
     if (b.moved[charId]) return cb && cb({ error: "This unit has already moved this turn" });
 
@@ -497,6 +499,7 @@ io.on("connection", (socket) => {
     if (!attacker || attacker.ownerId !== me || !attacker.alive) return cb && cb({ error: "Invalid attacker" });
     if (!defender || defender.ownerId === me || !defender.alive) return cb && cb({ error: "Invalid target" });
     if (b.acted[attackerId]) return cb && cb({ error: "Unit already acted" });
+    if (hasStatus(attacker, "cursed")) return cb && cb({ error: "Cursed — can't attack this turn" });
 
     // Ability must belong to this character.
     if (abilityName && !attacker.abilities.includes(abilityName) && !(attacker.specials || []).includes(abilityName)) {
@@ -554,7 +557,8 @@ io.on("connection", (socket) => {
     // Defender may counter only if its BASIC weapon reach covers the attacker (using the same
     // height-aware distance) AND it isn't Injured this turn.
     const defenderCanCounter =
-      combat.inAttackRange(dPos, aPos, dTile, aTile, combat.getRange(defender, null)) && !hasStatus(defender, "injured");
+      combat.inAttackRange(dPos, aPos, dTile, aTile, combat.getRange(defender, null)) &&
+      !hasStatus(defender, "injured") && !hasStatus(defender, "cursed");
 
     // Terrain effects: each combatant uses the tile it's standing on.
     const result = combat.resolveExchange(attacker, defender, abilityName, defenderCanCounter, aTile, dTile);
@@ -588,9 +592,8 @@ io.on("connection", (socket) => {
     broadcast(room);
   });
 
-  // Cast a mage special ability. Targets an ally, enemy, or self within the special's
-  // range. For now this only consumes the caster's action and notifies both players —
-  // the status effects themselves are deferred to a later pass.
+  // Cast a mage special on an ally / self / enemy within range. Validates the target side for the
+  // special's effect and applies it (Tier 1 = enemy-facing effects; others land as no-ops for now).
   on("cast", ({ code, casterId, targetId, specialName }, cb) => {
     const room = rooms[code];
     if (!room || !room.battle) return cb && cb({ error: "No battle" });
@@ -603,6 +606,7 @@ io.on("connection", (socket) => {
     if (!caster || caster.ownerId !== me || !caster.alive) return cb && cb({ error: "Invalid caster" });
     if (b.acted[casterId]) return cb && cb({ error: "Unit already acted" });
     if (hasStatus(caster, "silenced")) return cb && cb({ error: "Silenced — can't cast this turn" });
+    if (hasStatus(caster, "cursed")) return cb && cb({ error: "Cursed — can't act this turn" });
     if (!(caster.specials || []).includes(specialName)) return cb && cb({ error: "Unknown special" });
 
     const special = combat.findAbility(caster, specialName);
@@ -611,21 +615,39 @@ io.on("connection", (socket) => {
     const target = b.units[targetId];
     if (!target || !target.alive) return cb && cb({ error: "Invalid target" });
 
-    // Specials use the same min-max + height-aware range as attacks (self-target always allowed).
+    // Target side must match the effect (no healing enemies / cursing allies, etc.).
+    const side = mageEffects.effectSide(special.effect);
+    if (side === "board") return cb && cb({ error: "Board-target specials aren't available yet" });
+    const isSelf = Number(targetId) === Number(casterId);
+    const sameOwner = target.ownerId === caster.ownerId;
+    const sideOk =
+      side === "enemy" ? !sameOwner :
+      side === "self" ? isSelf :
+      side === "ally" ? (sameOwner && !isSelf) :
+      sameOwner; // allyOrSelf
+    if (!sideOk) {
+      const need = side === "enemy" ? "an enemy" : side === "ally" ? "an ally" : side === "self" ? "itself" : "an ally or itself";
+      return cb && cb({ error: `${specialName} must target ${need}` });
+    }
+
+    // Same min-max + height-aware range as attacks (self-target always allowed).
     const cPos = b.positions[casterId], tPos = b.positions[targetId];
     const sRange = combat.parseRange(special.range != null ? special.range : 1);
     const sDist = combat.combatDistance(cPos, tPos, board.tileAt(cPos.r, cPos.c), board.tileAt(tPos.r, tPos.c));
-    if (Number(targetId) !== Number(casterId) && !combat.withinRange(sRange, sDist)) return cb && cb({ error: "Target out of range" });
+    if (!isSelf && !combat.withinRange(sRange, sDist)) return cb && cb({ error: "Target out of range" });
+
+    const applied = mageEffects.applyEffect(special.effect, target, special, addStatus);
 
     b.acted[casterId] = true; // casting is the unit's action for the turn
     b.moved[casterId] = true; // acting also forfeits the move — the unit's turn is finished
     b.history.push({ kind: "act", charId: Number(casterId) });
 
+    checkWin(room); // an effect could (later) be lethal
     io.to(room.code).emit("specialResult", {
       casterId, targetId, specialName,
-      effect: special.effect, description: special.description,
+      effect: special.effect, description: special.description, applied,
     });
-    cb && cb({ ok: true });
+    cb && cb({ ok: true, applied });
     broadcast(room);
   });
 
@@ -642,6 +664,7 @@ io.on("connection", (socket) => {
     const unit = b.units[charId];
     if (!unit || unit.ownerId !== me || !unit.alive) return cb && cb({ error: "Invalid unit" });
     if (b.acted[charId]) return cb && cb({ error: "Unit already acted" });
+    if (hasStatus(unit, "cursed")) return cb && cb({ error: "Cursed — can't act this turn" });
     const wkey = String(unit.base_weapon || "").toLowerCase();
     const hasEff = (weaponsData.weaponAbilities[wkey] || []).some((a) => a.type === "Efficiency" && (unit.abilities || []).includes(a.name));
     if (!hasEff) return cb && cb({ error: "This unit has no Efficiency move" });

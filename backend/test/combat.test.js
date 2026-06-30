@@ -224,4 +224,20 @@ const vsFireBasic = combat.resolveExchange(effAtk, mk({ id: 2, base_weapon: "fir
 const vsSwordBasic = combat.resolveExchange(effAtk, mk({ id: 2, base_weapon: "sword", ...tgtOpts }), "Tomahawk", false, n, n, midE);
 assert.strictEqual(vsFireBasic.events[0].damage, vsSwordBasic.events[0].damage, "a non-Efficiency move is unaffected by the target's weapon");
 
+// 22. Mage stat-modifier statuses (buffs/nerfs) are read by computeAllStats.
+const sBase = combat.computeAllStats(mk({ base_weapon: "sword", strength: 10 }));
+const sNerf = combat.computeAllStats(mk({ base_weapon: "sword", strength: 10, statuses: [{ type: "Pwr-", modStat: "power", mult: 0.7 }] }));
+const sBuff = combat.computeAllStats(mk({ base_weapon: "sword", strength: 10, statuses: [{ type: "Pwr+", modStat: "power", mult: 1.3 }] }));
+assert.ok(sNerf.power < sBase.power && sBuff.power > sBase.power, "Pwr-/Pwr+ scale power down/up");
+assert.ok(combat.computeAllStats(mk({ base_weapon: "sword", statuses: [{ type: "Eva+", modStat: "evasion", mult: 1.3 }] })).evasion >
+  combat.computeAllStats(mk({ base_weapon: "sword" })).evasion, "Eva+ raises evasion");
+
+// 23. Pierced status: an afflicted defender's protection is treated as 0 (full power lands).
+const prcAtk = mk({ id: 1, base_weapon: "axe", strength: 10, knowledge: 30, luck: 0 });
+const prcDef = mk({ id: 2, base_weapon: "lance", defense: 12, resistance: 12, luck: 30, health: 9999, maxHealth: 9999, statuses: [{ type: "pierced", turnsLeft: 1 }] });
+const rPrc = combat.resolveExchange(prcAtk, prcDef, null, false, n, n, () => 0.5);
+assert.strictEqual(rPrc.events[0].damage, combat.computeAllStats(prcAtk, null).power, "pierced defender takes full power");
+const rPrcNo = combat.resolveExchange(prcAtk, mk({ id: 2, base_weapon: "lance", defense: 12, resistance: 12, luck: 30, health: 9999, maxHealth: 9999 }), null, false, n, n, () => 0.5);
+assert.ok(rPrcNo.events[0].damage < rPrc.events[0].damage, "un-pierced defender takes less (protection applies)");
+
 console.log("All combat sanity checks passed ✓");

@@ -35,6 +35,7 @@ import {
   TERRAIN_FX,
   RADIAL_TARGETS,
 } from "../logic/combat";
+import { effectSide } from "../logic/mageEffects";
 
 const CELL = 46; // fixed tile size; the board scrolls when bigger than the screen
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
@@ -51,6 +52,18 @@ const STATUS_LABEL = {
   slowed: "🐌 Slowed — no second strike",
   blinded: "🌫️ Blinded — accuracy halved",
   immobilized: "⛓️ Immobilized — can't move",
+  pierced: "🩸 Pierced — protection treated as 0",
+  cursed: "💀 Cursed — can't move, act, or counter",
+  // Mage stat buffs/nerfs (timed multipliers)
+  "Pwr+": "💪 Power up", "Pwr-": "💪 Power down",
+  "Prt+": "🛡️ Protection up", "Prt-": "🛡️ Protection down",
+  "Eva+": "💨 Evasion up", "Eva-": "💨 Evasion down",
+  "Acc+": "🎯 Accuracy up", "Acc-": "🎯 Accuracy down",
+  "Agly+": "🏃 Agility up", "Agly-": "🏃 Agility down",
+  "Crit+": "✨ Crit up", "Crit-": "✨ Crit down",
+  "Blk+": "🧱 Block up", "Blk-": "🧱 Block down",
+  "Lck+": "🍀 Luck up", "Lck-": "🍀 Luck down",
+  "Mve+": "🦶 Move up", "Mve-": "🦶 Move down",
 };
 // Short glyph for the brief damage-over-time tick banner.
 const DOT_GLYPH = { burned: "🔥", poisoned: "☠️", frozen: "❄️", crushed: "🪨", shocked: "⚡" };
@@ -235,19 +248,25 @@ export default function BattleScreen({ route, navigation }) {
     return out;
   }, [selAlive, selPos, myTurn, hasActed, casting, units, positions, controlSide, selected]);
 
-  // Units a special can be cast on: self + any alive unit within the special's (min-max) range.
+  // Units a special can be cast on — restricted to the effect's valid side (ally/self/enemy) and range.
   const castTargets = useMemo(() => {
     if (!casting || !selAlive || !selPos || !myTurn) return new Set();
+    const side = effectSide(casting.effect);
     const r = parseRange(casting.range);
-    const out = new Set([Number(selectedId)]); // self always allowed
+    const out = new Set();
+    const selfAllowed = side === "self" || side === "allyOrSelf";
+    if (selfAllowed) out.add(Number(selectedId));
+    if (side === "self" || side === "board") return out; // self-only, or board (no unit targets yet)
     for (const [id, u] of Object.entries(units)) {
-      if (!u.alive || !positions[id]) continue;
+      if (!u.alive || !positions[id] || Number(id) === Number(selectedId)) continue;
+      const sameOwner = u.ownerId === controlSide;
+      if (side === "enemy" ? sameOwner : !sameOwner) continue; // enemy effects hit foes; others hit allies
       const p = positions[id];
       const dist = combatDistance(selPos, p, cellAt(selPos.r, selPos.c), cellAt(p.r, p.c));
-      if (dist === 0 || withinRange(r, dist)) out.add(Number(id));
+      if (withinRange(r, dist)) out.add(Number(id));
     }
     return out;
-  }, [casting, selAlive, selPos, myTurn, units, positions, selectedId]);
+  }, [casting, selAlive, selPos, myTurn, units, positions, selectedId, controlSide]);
 
   // Long-press any unit (ally or enemy) to inspect its full stats.
   const onCellLongPress = (abs) => {
@@ -395,6 +414,9 @@ export default function BattleScreen({ route, navigation }) {
                   const isMove = moveCells.has(`${abs.r}:${abs.c}`);
                   const isTarget = occId != null && targetableIds.has(occId);
                   const isCast = occId != null && castTargets.has(occId);
+                  const castSelf = isCast && occId === selectedId; // the caster itself
+                  const castEnemy = isCast && !mine;                // an enemy in range
+                  const castAlly = isCast && !castSelf && mine;     // an ally in range
                   const tc = cellAt(abs.r, abs.c);
                   const tile = tileFor(tc.t);
                   return (
@@ -421,13 +443,19 @@ export default function BattleScreen({ route, navigation }) {
                         </View>
                       )}
                       {isTarget && <View style={[styles.overlay, styles.ovTarget]} />}
-                      {isCast && <View style={[styles.overlay, styles.ovCast]} />}
+                      {isCast && <View style={[styles.overlay, castEnemy ? styles.ovCastEnemy : castSelf ? styles.ovCastSelf : styles.ovCastAlly]} />}
+                      {isCast && (
+                        <View style={[styles.castBadge, castEnemy ? styles.castBadgeEnemy : castSelf ? styles.castBadgeSelf : styles.castBadgeAlly]} pointerEvents="none">
+                          <Text style={styles.castBadgeText}>{castSelf ? "⭐" : castEnemy ? "🎯" : "＋"}</Text>
+                        </View>
+                      )}
                       {/* the unit: a small round piece so the tile shows around it */}
                       {u && (
                         <View
                           style={[
                             styles.token,
                             { backgroundColor: mine ? theme.mine : theme.enemy, opacity: u.alive ? 1 : 0.35 },
+                            isCast && { borderWidth: 3, borderColor: castEnemy ? "#ff5a5a" : castSelf ? theme.gold : "#37d67a" },
                           ]}
                         >
                           <Text style={styles.tokenGlyph}>{u.alive ? WEAPON_GLYPH[u.base_weapon] || "⚔️" : "💀"}</Text>
@@ -458,7 +486,13 @@ export default function BattleScreen({ route, navigation }) {
       {casting && (
         <View style={styles.castBanner}>
           <Text style={styles.castBannerText}>
-            ✨ Casting {casting.name} — tap a ✨ target (range {casting.range})
+            ✨ {casting.name} — tap a {(() => {
+              const side = effectSide(casting.effect);
+              if (side === "enemy") return "🎯 enemy";
+              if (side === "self") return "⭐ this unit";
+              if (side === "ally") return "＋ ally";
+              return "＋ ally or ⭐ self";
+            })()} in range{castTargets.size === 0 ? " (none in range)" : ""}
           </Text>
           <TouchableOpacity onPress={() => setCasting(null)}>
             <Text style={styles.castCancel}>Cancel</Text>
@@ -1252,6 +1286,14 @@ const styles = StyleSheet.create({
   ovMove: { backgroundColor: "rgba(70,160,255,0.32)", borderWidth: 1.5, borderColor: "rgba(150,220,255,0.85)" },
   ovTarget: { backgroundColor: "rgba(200,70,60,0.55)" },
   ovCast: { backgroundColor: "rgba(120,200,130,0.5)" },
+  ovCastAlly: { backgroundColor: "rgba(55,214,122,0.42)", borderWidth: 1.5, borderColor: "rgba(120,255,170,0.9)" },
+  ovCastEnemy: { backgroundColor: "rgba(255,90,90,0.42)", borderWidth: 1.5, borderColor: "rgba(255,150,150,0.9)" },
+  ovCastSelf: { backgroundColor: "rgba(230,190,80,0.42)", borderWidth: 1.5, borderColor: "rgba(255,225,140,0.95)" },
+  castBadge: { position: "absolute", top: 1, left: 1, width: 16, height: 16, borderRadius: 8, alignItems: "center", justifyContent: "center", borderWidth: 1 },
+  castBadgeAlly: { backgroundColor: "#0f3a22", borderColor: "#37d67a" },
+  castBadgeEnemy: { backgroundColor: "#3a0f0f", borderColor: "#ff5a5a" },
+  castBadgeSelf: { backgroundColor: "#3a2f0f", borderColor: theme.gold },
+  castBadgeText: { fontSize: 9, color: "#fff" },
   moveMark: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
   moveDot: {
     width: 15,

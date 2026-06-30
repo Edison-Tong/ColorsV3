@@ -194,23 +194,27 @@ function computeAllStats(character, ability, defMult = 1, efficient = false) {
     else if (wepKey === "gauntlets") wepLuckMult *= 1.3;
   }
 
-  const adjLck = lck * wepLuckMult;
+  // Timed stat modifiers from mage specials (buffs/nerfs), read off the unit's statuses.
+  const mods = Array.isArray(character.statuses) ? character.statuses : [];
+  const modMult = (stat) => mods.reduce((m, s) => (s.modStat === stat ? m * (Number(s.mult) || 1) : m), 1);
+
+  const adjLck = lck * wepLuckMult * modMult("luck"); // Luck mod propagates to acc/eva/crit/block
   const hitBase = ab["hit%"] != null ? num(ab["hit%"]) : num(weapon["hit%"]);
 
   return {
     isMage: mage,
     hitBase,
-    power: Math.round((power + sizePower) * wepPowerMult),
+    power: Math.round((power + sizePower) * wepPowerMult * modMult("power")),
     protection: {
-      melee: Math.round(prot.melee * wepProtMult),
-      magic: Math.round(prot.magic * wepProtMult),
+      melee: Math.round(prot.melee * wepProtMult * modMult("protection")),
+      magic: Math.round(prot.magic * wepProtMult * modMult("protection")),
     },
-    agility: Math.round((spd + sizeAgility) * wepAgilityMult),
-    accuracy: Math.round(Math.ceil(0.5 * spd + 0.5 * skl + 1 * knl + 0.5 * adjLck) * wepAccuracyMult + sizeAccuracy),
-    evasion: Math.round(Math.ceil(0.5 * spd + 1 * skl + 0.5 * knl + 0.5 * adjLck) * wepEvasionMult + sizeEvasion),
-    critical: Math.ceil(0.5 * spd + 0.5 * skl + 0.5 * knl + 1 * adjLck),
-    block: def + res + adjLck,
-    luck: lck,
+    agility: Math.round((spd + sizeAgility) * wepAgilityMult * modMult("agility")),
+    accuracy: Math.round(Math.ceil(0.5 * spd + 0.5 * skl + 1 * knl + 0.5 * adjLck) * wepAccuracyMult * modMult("accuracy") + sizeAccuracy),
+    evasion: Math.round(Math.ceil(0.5 * spd + 1 * skl + 0.5 * knl + 0.5 * adjLck) * wepEvasionMult * modMult("evasion") + sizeEvasion),
+    critical: Math.round(Math.ceil(0.5 * spd + 0.5 * skl + 0.5 * knl + 1 * adjLck) * modMult("critical")),
+    block: (def + res + adjLck) * modMult("block"),
+    luck: lck * modMult("luck"),
   };
 }
 
@@ -302,7 +306,10 @@ function resolveExchange(attacker, defender, abilityName, defenderCanCounter, at
   const isAbsorption = type === "Absorption"; // attacker heals 50% of the damage it deals
 
   // Piercing: the attacker strikes against a copy of the defender with protection zeroed out.
-  const defForAtk = isPiercing ? { ...def, protection: { melee: 0, magic: 0 } } : def;
+  // A unit whose protection is treated as 0: the Piercing move, OR a target under the "pierced" status.
+  const zeroProt = (s) => ({ ...s, protection: { melee: 0, magic: 0 } });
+  const defForAtk = (isPiercing || statusActive(defender, "pierced")) ? zeroProt(def) : def;
+  const atkForDef = statusActive(attacker, "pierced") ? zeroProt(atk) : atk; // attacker's prot when it's countered
 
   let atkHp = num(attacker.health);
   let defHp = num(defender.health);
@@ -324,7 +331,7 @@ function resolveExchange(attacker, defender, abilityName, defenderCanCounter, at
   const doDef = (label) => {
     // Obscuring: the defender's counter accuracy is halved once the attacker has landed a hit.
     const defStats = isObscuring && attackerLanded ? { ...def, accuracy: Math.round(def.accuracy * 0.5) } : def;
-    const r = strike(defStats, atk, rng);
+    const r = strike(defStats, atkForDef, rng);
     atkHp = Math.max(0, atkHp - r.damage);
     events.push({ step: label, by: "defender", attackerId: defender.id, targetId: attacker.id, ...r, defenderHp: defHp, attackerHp: atkHp });
     return atkHp > 0;
@@ -388,7 +395,8 @@ function resolveAoE(attacker, abilityName, targets, atkTile = NORMAL_TILE, rng =
   const events = [];
   for (const t of targets) {
     const atk = applyTerrain(computeAllStats(attacker, ability, defMultFor(atkTile)), atkTile, t.tile);
-    const def = applyTerrain(computeAllStats(t.unit, null, defMultFor(t.tile)), t.tile, atkTile);
+    let def = applyTerrain(computeAllStats(t.unit, null, defMultFor(t.tile)), t.tile, atkTile);
+    if (statusActive(t.unit, "pierced")) def = { ...def, protection: { melee: 0, magic: 0 } };
     let r = strike(atk, def, rng);
     const mult = t.dmgMult || 1;
     if (mult !== 1 && r.damage > 0) r = { ...r, damage: Math.floor(r.damage * mult) };
